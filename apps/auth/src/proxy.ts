@@ -12,10 +12,25 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(new URL('/login', request.url));
   }
 
-  return intlMiddleware(request);
+  // 1. Process standard routing/i18n middleware
+  const response = intlMiddleware(request);
+
+  // 2. Inject CSRF Token on first boot if missing
+  if (!request.cookies.has("nodiox_csrf_token")) {
+    const token = crypto.randomUUID();
+    response.cookies.set("nodiox_csrf_token", token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "strict",
+      path: "/",
+    });
+  }
+
+  return response;
 }
 
 export default middleware;
+
 
 export const config = {
   matcher: ['/((?!api|_next|_vercel|.*\\..*).*)']

@@ -18,6 +18,7 @@ interface Step2MfaProps {
 // Removed verifyOtp API
 import { useFormContext } from "react-hook-form"
 import { type LoginData } from "~/lib/login-schema"
+import { apiFetch } from "~/lib/api-client"
 
 export function Step2Mfa({ onBack, onSuccess }: Step2MfaProps) {
   const t = useTranslations("MFA")
@@ -31,7 +32,7 @@ export function Step2Mfa({ onBack, onSuccess }: Step2MfaProps) {
       if (email) body.email = email
       if (phoneNumber) body.phone = phoneNumber
 
-      const res = await fetch("/api/auth/verify-otp", {
+      const res = await apiFetch("/api/auth/verify-otp", {
         method: "POST",
         body: JSON.stringify(body),
       })
@@ -75,7 +76,7 @@ export function Step2Mfa({ onBack, onSuccess }: Step2MfaProps) {
         if (email) body.email = email
         if (phoneNumber) body.phone = phoneNumber
 
-        const res = await fetch("/api/auth/login", {
+        const res = await apiFetch("/api/auth/login", {
           method: "POST",
           body: JSON.stringify(body),
         })

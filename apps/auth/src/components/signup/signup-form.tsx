@@ -10,6 +10,7 @@ import { AnimatePresence } from "framer-motion"
 
 import { FieldGroup, Confetti, type ConfettiApi } from "@nodiox/ui"
 import { createOnboardingSchema, type OnboardingData } from "~/lib/onboarding-schema"
+import { apiFetch } from "~/lib/api-client"
 // Removed backend imports
 type AuthError = string;
 
@@ -93,7 +94,7 @@ export function SignupForm({
     setServerError(null)
     
     try {
-      const res = await fetch("/api/auth/set-password", {
+      const res = await apiFetch("/api/auth/set-password", {
         method: "POST",
         body: JSON.stringify({
           password: data.password,
@@ -186,7 +187,7 @@ export function SignupForm({
                   setIsLoading(true)
                   setServerError(null)
                   try {
-                    const res = await fetch("/api/auth/send-otp", {
+                    const res = await apiFetch("/api/auth/send-otp", {
                       method: "POST",
                       body: JSON.stringify({ email: methods.getValues("email") }),
                     })
@@ -224,7 +225,7 @@ export function SignupForm({
                   setIsLoading(true)
                   setServerError(null)
                   try {
-                    const res = await fetch("/api/auth/send-otp", {
+                    const res = await apiFetch("/api/auth/send-otp", {
                       method: "POST",
                       body: JSON.stringify({ phone: methods.getValues("phoneNumber") }),
                     })

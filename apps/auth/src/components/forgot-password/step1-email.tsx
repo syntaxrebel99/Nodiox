@@ -11,6 +11,8 @@ import { ShimmerButton, Input, Field, FieldLabel } from "@nodiox/ui"
 import { Link } from "@nodiox/i18n"
 import { motion } from "framer-motion"
 
+import { apiFetch } from "~/lib/api-client"
+
 import type { ForgotPasswordData } from "~/lib/forgot-password-schema"
 
 interface Step1EmailProps {
@@ -46,7 +48,7 @@ export function Step1Email({ onNext }: Step1EmailProps) {
       setIsLoading(true)
       setServerError(null)
       try {
-        const res = await fetch("/api/auth/forgot-password/send-otp", {
+        const res = await apiFetch("/api/auth/forgot-password/send-otp", {
           method: "POST",
           body: JSON.stringify({ email: email }),
         })

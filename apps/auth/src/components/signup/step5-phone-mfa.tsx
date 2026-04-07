@@ -8,6 +8,7 @@ import { X } from "lucide-react"
 import { Input, ShimmerButton } from "@nodiox/ui"
 import { type OnboardingData } from "~/lib/onboarding-schema"
 import { useMfaLogic } from "~/hooks/use-mfa-logic"
+import { apiFetch } from "~/lib/api-client"
 
 import { motion } from "framer-motion"
 
@@ -33,7 +34,7 @@ export function Step5PhoneMfa({ onNext, onBack, isLoading, setIsLoading }: Step5
     setIsLoading(true)
     setOtpError(null)
     try {
-      const res = await fetch("/api/auth/verify-otp", {
+      const res = await apiFetch("/api/auth/verify-otp", {
         method: "POST",
         body: JSON.stringify({ phone: phoneNumber, token: newOtpStr, type: "sms" }),
       })

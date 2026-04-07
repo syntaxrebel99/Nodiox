@@ -11,6 +11,7 @@ import { FieldDescription } from "@nodiox/ui"
 import { useRouter } from "@nodiox/i18n"
 
 import { createLoginSchema, type LoginData } from "~/lib/login-schema"
+import { apiFetch } from "~/lib/api-client"
 // Removed loginUser import
 import { Step1Credentials } from "./step1-credentials"
 import { Step2Mfa } from "./step2-mfa"
@@ -76,7 +77,7 @@ export function LoginForm({
       setIsLoading(true)
       setServerError(null)
       try {
-        const res = await fetch("/api/auth/login", {
+        const res = await apiFetch("/api/auth/login", {
           method: "POST",
           body: JSON.stringify({
             email: data.email,

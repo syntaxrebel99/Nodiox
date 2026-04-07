@@ -5,6 +5,7 @@ import { EmailService } from "~/lib/email-service"
 import { otpRateLimit } from "~/lib/rate-limit"
 import { z } from "zod"
 import type { EmailOtpType, MobileOtpType } from "@supabase/supabase-js"
+import { validateCsrf, rotateCsrfToken } from "~/lib/csrf"
 
 const verifyOtpSchema = z.object({
   email: z.string().email().optional(),
@@ -17,6 +18,12 @@ const verifyOtpSchema = z.object({
 
 export async function POST(req: Request) {
   try {
+    // 0. CSRF Validation
+    const csrfResult = await validateCsrf(req)
+    if (!csrfResult.success) {
+      return NextResponse.json({ error: csrfResult.error }, { status: 403 })
+    }
+
     // 1. Rate Limiting via IP
     const ip = req.headers.get("x-forwarded-for") ?? "127.0.0.1"
     const { success } = await otpRateLimit.limit(ip)
@@ -73,6 +80,9 @@ export async function POST(req: Request) {
           path: "/",
         })
         
+        // CSRF Token Rotation on successful signup verification
+        await rotateCsrfToken()
+        
         return response
       }
 
@@ -101,6 +111,9 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: finalError.message }, { status: 401 })
       }
 
+      // CSRF Token Rotation on successful MFA login
+      await rotateCsrfToken()
+
       return NextResponse.json({ success: true, user: verifyData.user })
     }
 
@@ -120,6 +133,9 @@ export async function POST(req: Request) {
         { status: error.status || 401 }
       )
     }
+
+    // CSRF Token Rotation on successful OTP verification (Phone flow)
+    await rotateCsrfToken()
 
     // If successful, Supabase automatically establishes a session cookie 
     // via our @supabase/ssr server client's `setAll` implementation.

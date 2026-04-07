@@ -4,6 +4,7 @@ import { otpRateLimit } from "~/lib/rate-limit"
 import { EmailService } from "~/lib/email-service"
 import { createAdminClient } from "~/lib/supabase/admin"
 import { z } from "zod"
+import { validateCsrf } from "~/lib/csrf"
 
 const forgotPasswordSchema = z.object({
   email: z.string().email(),
@@ -11,6 +12,12 @@ const forgotPasswordSchema = z.object({
 
 export async function POST(req: Request) {
   try {
+    // 0. CSRF Validation
+    const csrfResult = await validateCsrf(req)
+    if (!csrfResult.success) {
+      return NextResponse.json({ error: csrfResult.error }, { status: 403 })
+    }
+
     // 1. Rate Limiting via IP
     const ip = req.headers.get("x-forwarded-for") ?? "127.0.0.1"
     const { success } = await otpRateLimit.limit(ip)

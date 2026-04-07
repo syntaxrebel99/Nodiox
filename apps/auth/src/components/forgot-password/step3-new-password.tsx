@@ -11,6 +11,7 @@ import { Field, FieldLabel, Input, ShimmerButton } from "@nodiox/ui"
 import { type ResetPasswordData } from "~/lib/reset-password-schema"
 import { motion } from "framer-motion"
 import { useRouter } from "@nodiox/i18n"
+import { apiFetch } from "~/lib/api-client"
 
 interface Step3NewPasswordProps {
   onBack: () => void
@@ -74,7 +75,7 @@ export function Step3NewPassword({ onBack, otp }: Step3NewPasswordProps) {
     setServerError(null)
     
     try {
-      const res = await fetch("/api/auth/reset-password/complete", {
+      const res = await apiFetch("/api/auth/reset-password/complete", {
         method: "POST",
         body: JSON.stringify({
           code: otp === "session" ? undefined : otp,

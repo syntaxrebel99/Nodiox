@@ -12,6 +12,7 @@ import { motion } from "framer-motion"
 import { useFormContext } from "react-hook-form"
 
 import type { ForgotPasswordData } from "~/lib/forgot-password-schema"
+import { apiFetch } from "~/lib/api-client"
 // Removed forgotPassword API
 
 interface Step2MfaProps {
@@ -46,7 +47,7 @@ export function Step2Mfa({ onBack, onSuccess }: Step2MfaProps) {
     onComplete: (otpStr) => handleOtpSubmit(otpStr),
     onResend: async () => {
       try {
-        const res = await fetch("/api/auth/forgot-password/send-otp", {
+        const res = await apiFetch("/api/auth/forgot-password/send-otp", {
           method: "POST",
           body: JSON.stringify({ email: email }),
         })
@@ -63,7 +64,7 @@ export function Step2Mfa({ onBack, onSuccess }: Step2MfaProps) {
     setIsLoading(true)
     setOtpError?.(null)
     try {
-      const res = await fetch("/api/auth/forgot-password/verify-otp", {
+      const res = await apiFetch("/api/auth/forgot-password/verify-otp", {
         method: "POST",
         body: JSON.stringify({ email: email, token: otpStr }),
       })

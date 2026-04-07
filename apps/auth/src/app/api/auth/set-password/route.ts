@@ -4,6 +4,7 @@ import { createClient } from "~/lib/supabase/server"
 import { createAdminClient } from "~/lib/supabase/admin"
 import { EmailService } from "~/lib/email-service"
 import { z } from "zod"
+import { validateCsrf, rotateCsrfToken } from "~/lib/csrf"
 
 const setPasswordSchema = z.object({
   password: z.string().min(8),
@@ -13,6 +14,12 @@ const setPasswordSchema = z.object({
 
 export async function POST(req: Request) {
   try {
+    // 0. CSRF Validation
+    const csrfResult = await validateCsrf(req)
+    if (!csrfResult.success) {
+      return NextResponse.json({ error: csrfResult.error }, { status: 403 })
+    }
+
     const body = await req.json()
     const result = setPasswordSchema.safeParse(body)
     
@@ -84,6 +91,9 @@ export async function POST(req: Request) {
         type: "magiclink",
       })
     }
+
+    // 6. CSRF Token Rotation on successful setup
+    await rotateCsrfToken()
 
     return response
   } catch (error: any) {

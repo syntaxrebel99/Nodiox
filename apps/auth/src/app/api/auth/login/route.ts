@@ -4,6 +4,7 @@ import { createClient } from "~/lib/supabase/server"
 import { EmailService } from "~/lib/email-service"
 import { otpRateLimit } from "~/lib/rate-limit"
 import { z } from "zod"
+import { validateCsrf, rotateCsrfToken } from "~/lib/csrf"
 
 const loginSchema = z.object({
   email: z.string().email().optional(),
@@ -15,6 +16,12 @@ const loginSchema = z.object({
 
 export async function POST(req: Request) {
   try {
+    // 0. CSRF Validation
+    const csrfResult = await validateCsrf(req)
+    if (!csrfResult.success) {
+      return NextResponse.json({ error: csrfResult.error }, { status: 403 })
+    }
+
     // 1. Rate Limiting via IP (Brute force protection)
     const ip = req.headers.get("x-forwarded-for") ?? "127.0.0.1"
     const { success } = await otpRateLimit.limit(ip)
@@ -55,6 +62,9 @@ export async function POST(req: Request) {
         { status: 401 }
       )
     }
+
+    // CSRF Token Rotation on successful credentials validation
+    await rotateCsrfToken()
 
     // 5. If password OK -> Send OTP for Factor 2 via Universal Resend Engine
     try {

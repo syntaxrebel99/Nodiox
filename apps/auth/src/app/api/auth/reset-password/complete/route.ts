@@ -5,6 +5,7 @@ import { createAdminClient } from "~/lib/supabase/admin"
 import { EmailService } from "~/lib/email-service"
 import { otpRateLimit } from "~/lib/rate-limit"
 import { z } from "zod"
+import { validateCsrf, rotateCsrfToken } from "~/lib/csrf"
 
 const resetPasswordSchema = z.object({
   code: z.string().optional(),
@@ -13,6 +14,12 @@ const resetPasswordSchema = z.object({
 
 export async function POST(req: Request) {
   try {
+    // 0. CSRF Validation
+    const csrfResult = await validateCsrf(req)
+    if (!csrfResult.success) {
+      return NextResponse.json({ error: csrfResult.error }, { status: 403 })
+    }
+
     // 1. Rate Limiting via IP
     const ip = req.headers.get("x-forwarded-for") ?? "127.0.0.1"
     const { success } = await otpRateLimit.limit(ip)
@@ -114,6 +121,9 @@ export async function POST(req: Request) {
 
     // 7. Sign out the session used for reset to force a fresh login
     await supabase.auth.signOut()
+
+    // 8. CSRF Token Rotation on successful password change
+    await rotateCsrfToken()
 
     return NextResponse.json({ success: true })
   } catch (error: any) {
