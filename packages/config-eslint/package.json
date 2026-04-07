@@ -1,0 +1,12 @@
+{
+  "name": "@nodiox/config-eslint",
+  "version": "0.0.0",
+  "private": true,
+  "files": ["base.mjs", "next.mjs"],
+  "devDependencies": {
+    "@eslint/eslintrc": "^3",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.1",
+    "typescript-eslint": "^8"
+  }
+}

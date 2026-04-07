@@ -1,0 +1,29 @@
+{
+  "name": "@nodiox/utils",
+  "version": "0.0.0",
+  "private": true,
+  "exports": {
+    ".": {
+      "types": "./src/lib/utils.ts",
+      "import": "./src/lib/utils.ts"
+    },
+    "./utils": {
+      "types": "./src/lib/utils.ts",
+      "import": "./src/lib/utils.ts"
+    },
+    "./use-mobile": {
+      "types": "./src/hooks/use-mobile.ts",
+      "import": "./src/hooks/use-mobile.ts"
+    }
+  },
+  "dependencies": {
+    "clsx": "^2.1.1",
+    "tailwind-merge": "^3.5.0",
+    "react": "19.2.4"
+  },
+  "devDependencies": {
+    "@nodiox/config-typescript": "workspace:*",
+    "@nodiox/config-eslint": "workspace:*",
+    "typescript": "^5"
+  }
+}

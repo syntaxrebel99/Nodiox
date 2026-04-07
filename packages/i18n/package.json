@@ -1,0 +1,28 @@
+{
+  "name": "@nodiox/i18n",
+  "version": "0.0.0",
+  "private": true,
+  "exports": {
+    ".": {
+      "types": "./src/routing.ts",
+      "import": "./src/routing.ts"
+    },
+    "./routing": {
+      "types": "./src/routing.ts",
+      "import": "./src/routing.ts"
+    },
+    "./request": {
+      "types": "./src/request.ts",
+      "import": "./src/request.ts"
+    }
+  },
+  "dependencies": {
+    "next": "16.2.1",
+    "next-intl": "^4.8.3"
+  },
+  "devDependencies": {
+    "@nodiox/config-typescript": "workspace:*",
+    "@nodiox/config-eslint": "workspace:*",
+    "typescript": "^5"
+  }
+}

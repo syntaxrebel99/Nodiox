@@ -1,0 +1,32 @@
+{
+  "name": "landing",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --port 3000",
+    "build": "next build",
+    "start": "next start --port 3000",
+    "lint": "eslint",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "next": "16.2.1",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "next-intl": "^4.8.3",
+    "geist": "^1.7.0",
+    "@nodiox/ui": "workspace:*",
+    "@nodiox/utils": "workspace:*",
+    "@nodiox/i18n": "workspace:*"
+  },
+  "devDependencies": {
+    "@nodiox/config-typescript": "workspace:*",
+    "@nodiox/config-eslint": "workspace:*",
+    "@tailwindcss/postcss": "^4",
+    "tailwindcss": "^4",
+    "typescript": "^5",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19"
+  }
+}
