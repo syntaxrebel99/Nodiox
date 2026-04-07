@@ -11,9 +11,10 @@ interface ProvidersProps {
   locale: string
   direction: "ltr" | "rtl"
   timeZone: string
+  nonce?: string
 }
 
-export function Providers({ children, messages, locale, direction, timeZone }: ProvidersProps) {
+export function Providers({ children, messages, locale, direction, timeZone, nonce }: ProvidersProps) {
   React.useEffect(() => {
     const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     if (timeZone) {
@@ -27,6 +28,7 @@ export function Providers({ children, messages, locale, direction, timeZone }: P
       defaultTheme="system"
       enableSystem
       disableTransitionOnChange
+      nonce={nonce}
     >
       <NextIntlClientProvider messages={messages} locale={locale} timeZone={timeZone}>
         <DirectionProvider dir={direction}>
@@ -36,3 +38,4 @@ export function Providers({ children, messages, locale, direction, timeZone }: P
     </ThemeProvider>
   )
 }
+

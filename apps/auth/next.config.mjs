@@ -19,20 +19,7 @@ const nextConfig = {
       {
         source: "/(.*)",
         headers: [
-          {
-            key: "Content-Security-Policy",
-            value: `
-              default-src 'self';
-              script-src 'self' 'unsafe-inline' 'unsafe-eval';
-              style-src 'self' 'unsafe-inline' fonts.googleapis.com;
-              img-src 'self' blob: data: fonts.gstatic.com;
-              font-src 'self' fonts.gstatic.com;
-              object-src 'none';
-              base-uri 'self';
-              form-action 'self';
-              frame-ancestors 'none';
-            `.replace(/\s{2,}/g, ' ').trim(),
-          },
+          // CSP is now handled dynamically in proxy.ts (middleware) with per-request nonces
           {
             key: "X-Frame-Options",
             value: "DENY",
