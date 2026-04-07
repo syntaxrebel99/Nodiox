@@ -3,7 +3,7 @@ import { cookies } from "next/headers"
 import { createClient } from "~/lib/supabase/server"
 import { createAdminClient } from "~/lib/supabase/admin"
 import { EmailService } from "~/lib/email-service"
-import { otpRateLimit } from "~/lib/rate-limit"
+import { enforceAuthRateLimits, otpVerifyLimiters } from "~/lib/rate-limit"
 import { z } from "zod"
 import { validateCsrf, rotateCsrfToken } from "~/lib/csrf"
 
@@ -20,29 +20,31 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: csrfResult.error }, { status: 403 })
     }
 
-    // 1. Rate Limiting via IP
-    const ip = req.headers.get("x-forwarded-for") ?? "127.0.0.1"
-    const { success } = await otpRateLimit.limit(ip)
-    
-    if (!success) {
-      return NextResponse.json(
-        { error: "Too many attempts. Please try again later." },
-        { status: 429 }
-      )
-    }
-
-    // 2. Validate Request Body
+    // 1. Validate Body First (so we know target email if we have it logically mapped, wait, reset password only takes token and password...)
     const body = await req.json()
     const result = resetPasswordSchema.safeParse(body)
     
     if (!result.success) {
       return NextResponse.json(
-        { error: "Invalid password format", details: result.error.issues },
+        { error: "Invalid request format", details: result.error.issues },
         { status: 400 }
       )
     }
 
     const { code, password } = result.data
+
+    // 2. Execute Rate Limiting (IP purely since email identifier isn't in payload yet)
+    const ip = req.headers.get("x-forwarded-for") ?? "127.0.0.1"
+    
+    try {
+      await enforceAuthRateLimits({
+        limiters: otpVerifyLimiters,
+        ip,
+        namespace: "reset_password"
+      });
+    } catch (e: any) {
+      return NextResponse.json({ error: e.message }, { status: 429 })
+    }
 
     // 3. Init Clients
     const supabase = await createClient()

@@ -29,6 +29,8 @@ export async function middleware(request: NextRequest) {
     form-action 'self';
     frame-ancestors 'none';
     ${!isDev ? 'upgrade-insecure-requests;' : ''}
+    report-uri /api/security/csp-report;
+    report-to csp-endpoint;
   `.replace(/\s{2,}/g, ' ').trim();
 
   // 3. Forward the nonce to server components via request headers
@@ -44,6 +46,17 @@ export async function middleware(request: NextRequest) {
   // 5. Set the CSP + nonce on the actual response sent to the browser
   response.headers.set('Content-Security-Policy', cspHeader);
   response.headers.set('x-nonce', nonce);
+
+  // 5.1 Set the Report-To header dynamically resolving the absolute origin
+  const origin = `${request.nextUrl.protocol}//${request.nextUrl.host}`;
+  response.headers.set(
+    "Report-To",
+    JSON.stringify({
+      group: "csp-endpoint",
+      max_age: 10886400,
+      endpoints: [{ url: `${origin}/api/security/csp-report` }],
+    })
+  );
 
   // 6. Forward all request headers so Next.js server components
   //    can read them via the headers() API

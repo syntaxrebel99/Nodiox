@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { cookies } from "next/headers"
-import { otpRateLimit } from "~/lib/rate-limit"
+import { enforceAuthRateLimits, otpSendLimiters, otpSendCooldownLimit } from "~/lib/rate-limit"
 import { EmailService } from "~/lib/email-service"
 import { createAdminClient } from "~/lib/supabase/admin"
 import { z } from "zod"
@@ -18,29 +18,32 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: csrfResult.error }, { status: 403 })
     }
 
-    // 1. Rate Limiting via IP
-    const ip = req.headers.get("x-forwarded-for") ?? "127.0.0.1"
-    const { success } = await otpRateLimit.limit(ip)
-    
-    if (!success) {
-      return NextResponse.json(
-        { error: "Too many requests. Please try again later." },
-        { status: 429 }
-      )
-    }
-
-    // 2. Validate Request Body
+    // 1. Validate Target First
     const body = await req.json()
     const result = forgotPasswordSchema.safeParse(body)
     
     if (!result.success) {
       return NextResponse.json(
-        { error: "Invalid email format", details: result.error.issues },
+        { error: "Invalid request format", details: result.error.issues },
         { status: 400 }
       )
     }
 
     const { email } = result.data
+
+    // 2. Execute Tri-Layer Rate Limiting (IP + ID, Bounded Tarpit)
+    const ip = req.headers.get("x-forwarded-for") ?? "127.0.0.1"
+    
+    try {
+      await enforceAuthRateLimits({
+        limiters: [...otpSendLimiters, otpSendCooldownLimit],
+        ip,
+        identifier: email,
+        namespace: "otp_send"
+      });
+    } catch (e: any) {
+      return NextResponse.json({ error: e.message }, { status: 429 })
+    }
     const ua = req.headers.get("user-agent") || undefined
 
     // 3. ACCOUNT ENUMERATION PROTECTION:

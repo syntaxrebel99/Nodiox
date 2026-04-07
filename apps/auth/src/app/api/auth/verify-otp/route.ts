@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 import { createClient } from "~/lib/supabase/server"
 import { createAdminClient } from "~/lib/supabase/admin"
 import { EmailService } from "~/lib/email-service"
-import { otpRateLimit } from "~/lib/rate-limit"
+import { enforceAuthRateLimits, otpVerifyLimiters } from "~/lib/rate-limit"
 import { z } from "zod"
 import type { EmailOtpType, MobileOtpType } from "@supabase/supabase-js"
 import { validateCsrf, rotateCsrfToken } from "~/lib/csrf"
@@ -24,18 +24,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: csrfResult.error }, { status: 403 })
     }
 
-    // 1. Rate Limiting via IP
-    const ip = req.headers.get("x-forwarded-for") ?? "127.0.0.1"
-    const { success } = await otpRateLimit.limit(ip)
-    
-    if (!success) {
-      return NextResponse.json(
-        { error: "Too many attempts. Please try again later." },
-        { status: 429 }
-      )
-    }
-
-    // 2. Validate Body
+    // 1. Validate Body First (so we can extract identifiers for limits)
     const body = await req.json()
     const result = verifyOtpSchema.safeParse(body)
     
@@ -47,6 +36,20 @@ export async function POST(req: Request) {
     }
 
     const { email, phone, token, type } = result.data
+
+    // 2. Execute Tri-Layer Rate Limiting (IP + ID, Bounded Tarpit)
+    const ip = req.headers.get("x-forwarded-for") ?? "127.0.0.1"
+    
+    try {
+      await enforceAuthRateLimits({
+        limiters: otpVerifyLimiters,
+        ip,
+        identifier: email || phone,
+        namespace: "otp_verify"
+      });
+    } catch (e: any) {
+      return NextResponse.json({ error: e.message }, { status: 429 })
+    }
 
     // 3. Init Supabase Clients
     const supabase = await createClient()

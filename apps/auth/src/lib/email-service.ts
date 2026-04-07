@@ -2,6 +2,7 @@ import { Resend } from "resend"
 import { createAdminClient } from "./supabase/admin"
 import crypto from "crypto"
 import { getTranslations } from "next-intl/server"
+import { redisClient, hashIdentifier } from "./rate-limit"
 
 const resend = new Resend(process.env.RESEND_API_KEY)
 
@@ -101,6 +102,10 @@ export const EmailService = {
         .delete()
         .match({ email, type })
 
+      // Clear any past attempt counters since we are issuing a new code
+      const attemptsKey = `@nodiox/otp_attempts:${hashIdentifier('email', email)}`
+      await redisClient.del(attemptsKey)
+
       // 4. Store code in DB
       const { error: dbError } = await supabase
         .from("verification_codes")
@@ -158,6 +163,22 @@ export const EmailService = {
    */
   async verifyOtp(email: string, code: string, type: OtpType) {
     const supabase = createAdminClient()
+    
+    // Evaluate Upstash Redis Hard-Lock attempts
+    const attemptsKey = `@nodiox/otp_attempts:${hashIdentifier('email', email)}`
+    const attempts = await redisClient.incr(attemptsKey)
+    
+    // Set expiry for 15 minutes roughly tracking the OTP lifespan if first attempt
+    if (attempts === 1) {
+      await redisClient.expire(attemptsKey, 60 * 15) 
+    }
+
+    if (attempts >= 5) {
+      // Invalidate the code entirely due to brute-force
+      await supabase.from("verification_codes").delete().match({ email, type })
+      return { success: false, error: "Too many failed attempts. Code invalidated." }
+    }
+
     const { data, error: dbError } = await supabase
       .from("verification_codes")
       .select("*")
@@ -171,7 +192,12 @@ export const EmailService = {
       return { success: false, error: "Verification code has expired" }
     }
 
+    // Success! Delete the code so it cannot be used again
     await supabase.from("verification_codes").delete().eq("id", data.id)
+    
+    // Clear the attempts cache
+    await redisClient.del(attemptsKey)
+
     return { success: true }
   },
 

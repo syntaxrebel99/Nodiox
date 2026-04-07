@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 import { cookies } from "next/headers"
 import { createClient } from "~/lib/supabase/server"
 import { EmailService } from "~/lib/email-service"
-import { otpRateLimit } from "~/lib/rate-limit"
+import { enforceAuthRateLimits, loginLimiters } from "~/lib/rate-limit"
 import { z } from "zod"
 import { validateCsrf, rotateCsrfToken } from "~/lib/csrf"
 
@@ -22,18 +22,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: csrfResult.error }, { status: 403 })
     }
 
-    // 1. Rate Limiting via IP (Brute force protection)
-    const ip = req.headers.get("x-forwarded-for") ?? "127.0.0.1"
-    const { success } = await otpRateLimit.limit(ip)
-    
-    if (!success) {
-      return NextResponse.json(
-        { error: "Too many login attempts. Please try again later." },
-        { status: 429 }
-      )
-    }
-
-    // 2. Validate Request Body
+    // 1. Validate Request Body
     const body = await req.json()
     const result = loginSchema.safeParse(body)
     
@@ -45,6 +34,20 @@ export async function POST(req: Request) {
     }
 
     const { email, phone, password } = result.data
+
+    // 2. Execute Tri-Layer Rate Limiting (IP + ID, Bounded Tarpit)
+    const ip = req.headers.get("x-forwarded-for") ?? "127.0.0.1"
+    
+    try {
+      await enforceAuthRateLimits({
+        limiters: loginLimiters,
+        ip,
+        identifier: email || phone,
+        namespace: "login"
+      });
+    } catch (e: any) {
+      return NextResponse.json({ error: e.message }, { status: 429 })
+    }
 
     // 3. Init Supabase Client
     const supabase = await createClient()
@@ -64,7 +67,7 @@ export async function POST(req: Request) {
     }
 
     // CSRF Token Rotation on successful credentials validation
-    await rotateCsrfToken()
+    const newToken = await rotateCsrfToken()
 
     // 5. If password OK -> Send OTP for Factor 2 via Universal Resend Engine
     try {
@@ -81,7 +84,9 @@ export async function POST(req: Request) {
         if (otpError) throw otpError
       }
 
-      return NextResponse.json({ success: true, mfaRequired: true })
+      const response = NextResponse.json({ success: true, mfaRequired: true })
+      response.headers.set("x-csrf-token", newToken)
+      return response
     } catch (error: any) {
       console.error("Login MFA Send Error:", error)
       return NextResponse.json(
