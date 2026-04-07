@@ -81,7 +81,8 @@ export async function POST(req: Request) {
         })
         
         // CSRF Token Rotation on successful signup verification
-        await rotateCsrfToken()
+        const newCsrf = await rotateCsrfToken()
+        response.headers.set("x-csrf-token", newCsrf)
         
         return response
       }
@@ -112,9 +113,10 @@ export async function POST(req: Request) {
       }
 
       // CSRF Token Rotation on successful MFA login
-      await rotateCsrfToken()
-
-      return NextResponse.json({ success: true, user: verifyData.user })
+      const newCsrf = await rotateCsrfToken()
+      const response = NextResponse.json({ success: true, user: verifyData.user })
+      response.headers.set("x-csrf-token", newCsrf)
+      return response
     }
 
     // 5. Handle Phone OTP (Existing Supabase Flow)
@@ -135,11 +137,13 @@ export async function POST(req: Request) {
     }
 
     // CSRF Token Rotation on successful OTP verification (Phone flow)
-    await rotateCsrfToken()
+    const newCsrf = await rotateCsrfToken()
 
     // If successful, Supabase automatically establishes a session cookie 
     // via our @supabase/ssr server client's `setAll` implementation.
-    return NextResponse.json({ success: true, user: data.user })
+    const response = NextResponse.json({ success: true, user: data.user })
+    response.headers.set("x-csrf-token", newCsrf)
+    return response
   } catch (error: any) {
     console.error("Verify OTP Error:", error)
     return NextResponse.json(

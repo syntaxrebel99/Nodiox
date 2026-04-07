@@ -131,7 +131,7 @@ export function Step2Email({ onNext, onBack, isLoading, serverError, setServerEr
             <X className="size-3.5 shrink-0" />
             <span>
               {serverError 
-                ? (o.raw(serverError as any) === serverError ? serverError : o(serverError as any)) 
+                ? (o.has(serverError as any) ? o(serverError as any) : serverError) 
                 : (errors.email?.message ? o(errors.email.message as any) : "")}
             </span>
           </div>

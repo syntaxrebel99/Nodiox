@@ -1,4 +1,4 @@
-import { globalCsrfToken } from "~/components/providers/csrf-provider"
+import { globalCsrfToken, updateGlobalCsrfToken } from "~/components/providers/csrf-provider"
 
 /**
  * A wrapper around native fetch that automatically injects
@@ -17,8 +17,16 @@ export async function apiFetch(url: string, options: RequestInit = {}) {
     headers.set("x-csrf-token", globalCsrfToken)
   }
 
-  return fetch(url, {
+  const response = await fetch(url, {
     ...options,
     headers,
   })
+
+  // If the server rotated the CSRF token, it will send the new one in the response header
+  const rotatedToken = response.headers.get("x-csrf-token")
+  if (rotatedToken) {
+    updateGlobalCsrfToken(rotatedToken)
+  }
+
+  return response
 }

@@ -199,7 +199,7 @@ export function Step6Password({ onBack, isLoading, serverError, setServerError }
             )}
           >
             <X className="size-3.5 shrink-0" />
-            <span>{serverError && o(serverError as any)}</span>
+            <span>{serverError && (o.has(serverError as any) ? o(serverError as any) : serverError)}</span>
           </div>
         </div>
       </Field>

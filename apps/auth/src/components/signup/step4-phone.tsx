@@ -118,7 +118,7 @@ export function Step4Phone({ onNext, onBack, isLoading, serverError, setServerEr
             )}
           >
             <X className="size-3.5 shrink-0" />
-            <span>{serverError ? o(serverError as any) : (errors.phoneNumber?.message ? o(errors.phoneNumber.message as any) : "")}</span>
+            <span>{serverError ? (o.has(serverError as any) ? o(serverError as any) : serverError) : (errors.phoneNumber?.message ? o(errors.phoneNumber.message as any) : "")}</span>
           </div>
         </div>
       </Field>

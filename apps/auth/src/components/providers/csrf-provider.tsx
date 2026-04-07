@@ -8,6 +8,10 @@ interface CsrfContextType {
 
 export let globalCsrfToken: string | null = null
 
+export function updateGlobalCsrfToken(token: string) {
+  globalCsrfToken = token;
+}
+
 const CsrfContext = createContext<CsrfContextType>({ csrfToken: null })
 
 export function CsrfProvider({ children, token }: { children: React.ReactNode; token: string | null }) {
