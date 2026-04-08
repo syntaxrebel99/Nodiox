@@ -5,7 +5,7 @@ const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  allowedDevOrigins: ["192.168.100.4"],
+  allowedDevOrigins: process.env.ALLOWED_DEV_ORIGINS?.split(",") || [],
   transpilePackages: ["@nodiox/ui", "@nodiox/utils", "@nodiox/i18n"],
   images: {
     remotePatterns: [

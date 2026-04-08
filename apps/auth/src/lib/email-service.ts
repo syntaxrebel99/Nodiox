@@ -110,6 +110,17 @@ export const EmailService = {
       .digest("base64url")
   },
 
+  _getSiteUrl() {
+    const url = process.env.NEXT_PUBLIC_SITE_URL
+    if (!url) {
+      if (process.env.NODE_ENV === "production") {
+        throw new Error("Missing NEXT_PUBLIC_SITE_URL in production")
+      }
+      return "http://localhost:3000"
+    }
+    return url
+  },
+
   /**
    * Generates, stores, and sends a 6-digit OTP via Resend.
    */
@@ -198,7 +209,7 @@ export const EmailService = {
         throw resendError
       }
 
-      console.log(`[EmailService] OTP sent successfully to ${email}`)
+      console.log(`[EmailService] OTP sent successfully to ${hashedEmail}`)
       return { success: true }
     } catch (error) {
       console.error(`[EmailService] Failed to send OTP to ${email}:`, error)
@@ -363,7 +374,7 @@ export const EmailService = {
         console.error(`[EmailService] Resend Error (Password Alert):`, resendError)
         throw resendError
       }
-      console.log(`[EmailService] Password changed alert sent to ${email}`)
+      console.log(`[EmailService] Password changed alert sent to ${hashedEmail}`)
     } catch (error) {
       console.error(`[EmailService] Failed to send password changed alert to ${email}:`, error)
       throw error
@@ -377,6 +388,7 @@ export const EmailService = {
     try {
       const t = await getTranslations({ locale, namespace: 'Emails' })
       const hashedEmail = hashIdentifier("email", email)
+      const siteUrl = EmailService._getSiteUrl()
       console.log(`[EmailService] Sending signup attempt alert to [${hashedEmail}] (Locale: ${locale})`)
 
       const { error: resendError } = await withRetry(async () => {
@@ -392,7 +404,7 @@ export const EmailService = {
             <p>${t('signupAttemptReason')}</p>
             <p><strong>${t('signupAttemptAction')}</strong></p>
             <div class="button-container">
-              <a href="${process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'}/login" class="button">${t('signupAttemptButton')}</a>
+              <a href="${siteUrl}/login" class="button">${t('signupAttemptButton')}</a>
             </div>
             <p>${t('commonSafe')}<br>${t('commonTeam')}</p>
             `,
@@ -417,7 +429,7 @@ export const EmailService = {
         console.error(`[EmailService] Resend Error (Signup Attempt):`, resendError)
         throw resendError
       }
-      console.log(`[EmailService] Signup attempt alert sent to ${email}`)
+      console.log(`[EmailService] Signup attempt alert sent to ${hashedEmail}`)
     } catch (error) {
       console.error(`[EmailService] Failed to send signup attempt alert to ${email}:`, error)
       throw error
@@ -431,6 +443,7 @@ export const EmailService = {
     try {
       const t = await getTranslations({ locale, namespace: 'Emails' })
       const firstName = (fullName || 'User').split(' ')[0]
+      const siteUrl = EmailService._getSiteUrl()
       
       const hashedEmail = hashIdentifier("email", email)
       console.log(`[EmailService] Sending welcome email to [${hashedEmail}] (Locale: ${locale})`)
@@ -446,7 +459,7 @@ export const EmailService = {
             <p>${t('welcomeDescription')}</p>
             <p>${t('welcomeAction')}</p>
             <div class="button-container">
-              <a href="${process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'}/dashboard" class="button">${t('welcomeButton')}</a>
+              <a href="${siteUrl}/dashboard" class="button">${t('welcomeButton')}</a>
             </div>
             <p>${t('welcomeTeam')}<br>${t('commonTeam')}</p>
             `,
@@ -471,7 +484,7 @@ export const EmailService = {
         console.error(`[EmailService] Resend Error (Welcome):`, resendError)
         throw resendError
       }
-      console.log(`[EmailService] Welcome email sent successfully to ${email}`)
+      console.log(`[EmailService] Welcome email sent successfully to ${hashedEmail}`)
     } catch (error) {
       console.error(`[EmailService] Failed to send welcome email to ${email}:`, error)
       throw error

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { validatePhoneNumber } from "./phone-validation";
 
 /**
  * Validation schema for the login flow.
@@ -34,10 +35,7 @@ export const createLoginSchema = () => z.object({
         message: "phoneRequired",
       });
     } else {
-      const cleaned = data.phoneNumber.replace(/[\s\-()]/g, "");
- 
-      // Strict Algerian Mobile check (+213, 00213, or 0 followed by 5/6/7 and 8 digits)
-      if (!/^(?:\+213|00213|0)[567]\d{8}$/.test(cleaned)) {
+      if (!validatePhoneNumber(data.phoneNumber, "DZ")) {
         ctx.addIssue({
           path: ["phoneNumber"],
           code: z.ZodIssueCode.custom,
