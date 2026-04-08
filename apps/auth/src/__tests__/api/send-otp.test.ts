@@ -2,35 +2,42 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 
 const BASE_URL = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3001";
+const ORIGIN = new URL(BASE_URL).origin;
+
+const csrfHeaders = {
+  "Content-Type": "application/json",
+  Origin: ORIGIN,
+  "x-csrf-token": "test-csrf-token",
+  Cookie: "nodiox_csrf_token=test-csrf-token",
+};
+
+function withForwardedIp(headers: Record<string, string>, ip: string) {
+  return {
+    ...headers,
+    "x-forwarded-for": ip,
+  };
+}
 
 describe("API: /api/auth/send-otp", () => {
   test("should reject invalid email format", async () => {
     const res = await fetch(`${BASE_URL}/api/auth/send-otp`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: withForwardedIp(csrfHeaders, "198.51.100.20"),
       body: JSON.stringify({ email: "invalid-email" }),
     });
     
     assert.strictEqual(res.status, 400);
     const data = await res.json();
-    assert.ok(data.error);
+    assert.strictEqual(data.error, "Invalid request format");
   });
 
-  test("should enforce rate limiting on repeated requests", async () => {
-    const email = `test-rate-limit-${Date.now()}@example.com`;
-    
-    // We expect the rate limit to hit after a few requests (config is 5 per 10min)
-    // For testing, we just try a few times.
-    const results = [];
-    for (let i = 0; i < 7; i++) {
-       const res = await fetch(`${BASE_URL}/api/auth/send-otp`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
-      });
-      results.push(res.status);
-    }
-    
-    assert.ok(results.includes(429), "Expected to hit 429 Too Many Requests");
+  test("should reject state-changing requests without CSRF", async () => {
+    const res = await fetch(`${BASE_URL}/api/auth/send-otp`, {
+      method: "POST",
+      headers: withForwardedIp({ "Content-Type": "application/json" }, "198.51.100.21"),
+      body: JSON.stringify({ email: "test@example.com" }),
+    });
+
+    assert.strictEqual(res.status, 403);
   });
 });

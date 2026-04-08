@@ -1,39 +1,116 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from "@playwright/test"
 
-test.describe('Signup Flow Security & Baseline', () => {
-  test('should have security headers present', async ({ page }) => {
-    const response = await page.goto('/en/signup');
-    expect(response?.status()).toBe(200);
+const fastTimerScript = () => {
+  const originalSetTimeout = window.setTimeout.bind(window)
+  const originalSetInterval = window.setInterval.bind(window)
 
-    const headers = response?.headers();
-    
-    // Core Security Headers from Phase 1 audit
-    expect(headers?.['content-security-policy']).toBeDefined();
-    expect(headers?.['x-frame-options']).toBe('DENY');
-    expect(headers?.['x-content-type-options']).toBe('nosniff');
-    expect(headers?.['referrer-policy']).toBe('strict-origin-when-cross-origin');
-  });
+  window.setTimeout = ((callback: TimerHandler, delay?: number, ...args: unknown[]) =>
+    originalSetTimeout(callback, typeof delay === "number" && delay >= 1000 ? 10 : delay, ...args)) as typeof window.setTimeout
 
-  test('should render the first step of signup (Name)', async ({ page }) => {
-    await page.goto('/en/signup');
-    
-    // Check for "Onboarding" translations indirectly by checking for the h1
-    // We expect the step 1 title to be present.
-    await expect(page.locator('h1')).toBeVisible();
-    await expect(page.locator('input[name="fullName"]')).toBeVisible();
-  });
+  window.setInterval = ((callback: TimerHandler, delay?: number, ...args: unknown[]) =>
+    originalSetInterval(callback, typeof delay === "number" && delay >= 1000 ? 10 : delay, ...args)) as typeof window.setInterval
+}
 
-  test('should show skeleton when transitioning (UX)', async ({ page }) => {
-    await page.goto('/en/signup');
-    
-    // Fill name and click continue
-    await page.fill('input[name="fullName"]', 'John Doe');
-    await page.click('button[type="button"]:has-text("Continue")');
-    
-    // The skeleton should appear briefly during the API transition
-    // Note: This might be too fast to catch without network throttling
-    // but we can check if the skeleton component exists in the DOM.
-    const skeleton = page.locator('[key="skeleton"]');
-    // We don't strictly expect it to be visible forever, but we check if it mounts.
-  });
-});
+async function installFastTimers(page: Page) {
+  await page.addInitScript(fastTimerScript)
+}
+
+async function clickResendCode(page: Page) {
+  const resendButton = page.getByRole("button", { name: /Resend code/i })
+  await expect(resendButton).toBeVisible({ timeout: 5000 })
+  await expect(resendButton).toBeEnabled({ timeout: 5000 })
+  await resendButton.evaluate((button: HTMLButtonElement) => button.click())
+}
+
+test.describe("Signup Flow Security & MFA wiring", () => {
+  test("should have security headers present", async ({ page }) => {
+    const response = await page.goto("/en/signup")
+    expect(response?.status()).toBe(200)
+
+    const headers = response?.headers()
+
+    expect(headers?.["content-security-policy"]).toBeDefined()
+    expect(headers?.["x-frame-options"]).toBe("DENY")
+    expect(headers?.["x-content-type-options"]).toBe("nosniff")
+    expect(headers?.["referrer-policy"]).toBe("strict-origin-when-cross-origin")
+  })
+
+  test("should render the first step of signup (Name)", async ({ page }) => {
+    await page.goto("/en/signup")
+
+    await expect(page.locator("h1")).toBeVisible()
+    await expect(page.locator('input[name="fullName"]')).toBeVisible()
+  })
+
+  test("email MFA resend calls the backend with the saved email", async ({ page }) => {
+    let resendPayload: Record<string, unknown> | null = null
+
+    await installFastTimers(page)
+    await page.addInitScript(() => {
+      sessionStorage.setItem(
+        "nodiox_onboarding_draft",
+        JSON.stringify({
+          step: 3,
+          fullName: "John Doe",
+          email: "john@example.com",
+          phoneNumber: "",
+        })
+      )
+    })
+
+    await page.route("**/api/auth/send-otp", async (route) => {
+      resendPayload = route.request().postDataJSON() as Record<string, unknown>
+
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ success: true }),
+      })
+    })
+
+    await page.goto("/en/signup")
+    await expect(page.getByRole("heading", { name: /Check your inbox/i })).toBeVisible()
+    await clickResendCode(page)
+
+    await expect.poll(() => resendPayload).not.toBeNull()
+    expect(resendPayload).toMatchObject({
+      email: "john@example.com",
+    })
+  })
+
+  test("phone MFA resend calls the backend with the saved phone number", async ({ page }) => {
+    let resendPayload: Record<string, unknown> | null = null
+
+    await installFastTimers(page)
+    await page.addInitScript(() => {
+      sessionStorage.setItem(
+        "nodiox_onboarding_draft",
+        JSON.stringify({
+          step: 5,
+          fullName: "John Doe",
+          email: "john@example.com",
+          phoneNumber: "+213555123456",
+        })
+      )
+    })
+
+    await page.route("**/api/auth/send-otp", async (route) => {
+      resendPayload = route.request().postDataJSON() as Record<string, unknown>
+
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ success: true }),
+      })
+    })
+
+    await page.goto("/en/signup")
+    await expect(page.getByRole("heading", { name: /Check your phone/i })).toBeVisible()
+    await clickResendCode(page)
+
+    await expect.poll(() => resendPayload).not.toBeNull()
+    expect(resendPayload).toMatchObject({
+      phone: "+213555123456",
+    })
+  })
+})
