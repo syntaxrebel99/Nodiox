@@ -1,7 +1,6 @@
 import * as React from "react"
-import { useState, useRef, useEffect } from "react"
 import { useFormContext } from "react-hook-form"
-import { useTranslations, useLocale } from "next-intl"
+import { useTranslations } from "next-intl"
 import Image from "next/image"
 import { cn } from "@nodiox/utils"
 import { X } from "lucide-react"
@@ -23,7 +22,6 @@ interface Step5PhoneMfaProps {
 
 export function Step5PhoneMfa({ onNext, onBack, isLoading, setIsLoading }: Step5PhoneMfaProps) {
   const o = useTranslations("Onboarding")
-  const locale = useLocale()
   const { watch } = useFormContext<OnboardingData>()
 
   const shouldReduceMotion = useReducedMotion()
@@ -33,12 +31,14 @@ export function Step5PhoneMfa({ onNext, onBack, isLoading, setIsLoading }: Step5
   const firstName = fullName.trim().split(" ")[0] || ""
 
   const verifyPhoneOtpWrapper = async (newOtpStr: string) => {
+    if (isLoading) return
+
     setIsLoading(true)
     setOtpError(null)
     try {
       const res = await apiFetch("/api/auth/verify-otp", {
         method: "POST",
-        body: JSON.stringify({ phone: phoneNumber, token: newOtpStr, type: "sms" }),
+        body: JSON.stringify({ phone: phoneNumber, token: newOtpStr, type: "sms", flow: "signup" }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || "Invalid verification code")
@@ -69,10 +69,16 @@ export function Step5PhoneMfa({ onNext, onBack, isLoading, setIsLoading }: Step5
     length: 6,
     onComplete: verifyPhoneOtpWrapper,
     onResend: async () => {
-      // Simulate fake network load
-      await new Promise(r => setTimeout(r, 500))
+      const res = await apiFetch("/api/auth/send-otp", {
+        method: "POST",
+        body: JSON.stringify({ phone: phoneNumber }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to resend verification code")
+      }
     }
-  });
+  })
 
   const handleNextClick = () => {
     if (isPhoneOtpComplete) {

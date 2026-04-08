@@ -35,12 +35,8 @@ export async function POST(req: Request) {
       )
     }
 
-    let { email, phone } = result.data
-
-    // Normalize email if provided
-    if (email) {
-      email = normalizeEmail(email)
-    }
+    const { email: rawEmail, phone } = result.data
+    const email = rawEmail ? normalizeEmail(rawEmail) : undefined
 
     // 2. Execute Tri-Layer Rate Limiting (IP + ID, Bounded Tarpit)
     try {

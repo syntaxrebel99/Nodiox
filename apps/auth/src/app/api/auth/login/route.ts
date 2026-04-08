@@ -1,11 +1,17 @@
 import { NextResponse } from "next/server"
 import { cookies } from "next/headers"
-import { createClient } from "~/lib/supabase/server"
+import { createStatelessClient } from "~/lib/supabase/stateless"
 import { EmailService } from "~/lib/email-service"
 import { enforceAuthRateLimits, loginLimiters } from "~/lib/rate-limit"
 import { z } from "zod"
 import { validateCsrf, rotateCsrfToken } from "~/lib/csrf"
 import { respondError } from "~/lib/security-response"
+import {
+  getLoginChallengeCookieOptions,
+  invalidatePendingLoginChallenge,
+  issuePendingLoginChallenge,
+  LOGIN_CHALLENGE_COOKIE,
+} from "~/lib/pending-login"
 
 import { normalizeEmail } from "~/lib/normalize-email"
 
@@ -36,12 +42,8 @@ export async function POST(req: Request) {
       )
     }
 
-    let { email, phone, password } = result.data
-
-    // Normalize email if provided
-    if (email) {
-      email = normalizeEmail(email)
-    }
+    const { email: rawEmail, phone, password } = result.data
+    const email = rawEmail ? normalizeEmail(rawEmail) : undefined
 
     // 2. Execute Tri-Layer Rate Limiting (IP + ID, Bounded Tarpit)
     try {
@@ -55,15 +57,13 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: e.message }, { status: 429 })
     }
 
-    // 3. Init Supabase Client
-    const supabase = await createClient()
+    const cookieStore = await cookies()
+    const authClient = createStatelessClient()
 
-    // 4. Verify Password First
-    const creds: any = { password }
-    if (email) creds.email = email
-    if (phone) creds.phone = phone
-
-    const { error: signInError } = await supabase.auth.signInWithPassword(creds)
+    // 3. Verify credentials without issuing the final session yet.
+    const { error: signInError } = email
+      ? await authClient.auth.signInWithPassword({ email, password })
+      : await authClient.auth.signInWithPassword({ phone: phone!, password })
 
     if (signInError) {
       return NextResponse.json(
@@ -72,35 +72,49 @@ export async function POST(req: Request) {
       )
     }
 
-    // CSRF Token Rotation on successful credentials validation
-    const newToken = await rotateCsrfToken()
-
-    // 5. If password OK -> Send OTP for Factor 2 via Universal Resend Engine
+    // 4. If password is valid, send factor 2 and issue a short-lived login challenge.
     try {
       if (email) {
-        const cookieStore = await cookies()
         const locale = cookieStore.get("NEXT_LOCALE")?.value || "en"
         await EmailService.sendOtp(email, "login_mfa", locale)
       } else if (phone) {
-        // For now, phone still uses Supabase as we haven't integrated a custom SMS provider
-        const { error: otpError } = await supabase.auth.signInWithOtp({ 
-          phone, 
-          options: { shouldCreateUser: false } 
+        const { error: otpError } = await authClient.auth.signInWithOtp({
+          phone,
+          options: { shouldCreateUser: false },
         })
         if (otpError) throw otpError
       }
 
-      const response = NextResponse.json({ success: true, mfaRequired: true })
+      const staleChallengeToken = cookieStore.get(LOGIN_CHALLENGE_COOKIE)?.value
+      if (staleChallengeToken) {
+        await invalidatePendingLoginChallenge(staleChallengeToken)
+      }
+
+      const challengeToken = await issuePendingLoginChallenge({
+        method: email ? "email" : "phone",
+        email,
+        phone,
+      })
+
+      const newToken = await rotateCsrfToken()
+      const response = NextResponse.json({
+        success: true,
+        mfaRequired: true,
+        factorType: email ? "email" : "sms",
+      })
+
+      response.cookies.set(LOGIN_CHALLENGE_COOKIE, challengeToken, getLoginChallengeCookieOptions())
       response.headers.set("x-csrf-token", newToken)
       return response
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Failed to send verification code"
       console.error("Login MFA Send Error:", error)
       return NextResponse.json(
-        { error: error.message || "Failed to send verification code" },
+        { error: message },
         { status: 500 }
       )
     }
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Login Error:", error)
     return respondError(req, 500, "An unexpected error occurred")
   }

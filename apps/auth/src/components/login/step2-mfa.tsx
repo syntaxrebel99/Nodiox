@@ -4,7 +4,7 @@ import * as React from "react"
 import { useState } from "react"
 import Image from "next/image"
 import { cn } from "@nodiox/utils"
-import { ArrowLeft, RefreshCw, X } from "lucide-react"
+import { X } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { ShimmerButton, Input } from "@nodiox/ui"
 import { useMfaLogic } from "~/hooks/use-mfa-logic"
@@ -23,12 +23,21 @@ import { apiFetch } from "~/lib/api-client"
 export function Step2Mfa({ onBack, onSuccess }: Step2MfaProps) {
   const t = useTranslations("MFA")
   const [isLoading, setIsLoading] = useState(false)
+  const { watch } = useFormContext<LoginData>()
+  const email = watch("email")
+  const phoneNumber = watch("phoneNumber")
 
   const verifyOtpWrapper = async (otpStr: string) => {
+    if (isLoading) return
+
     setIsLoading(true)
     setOtpError(null)
     try {
-      const body: any = { token: otpStr, type: "email" }
+      const body: Record<string, string> = {
+        token: otpStr,
+        type: phoneNumber ? "sms" : "email",
+        flow: "login",
+      }
       if (email) body.email = email
       if (phoneNumber) body.phone = phoneNumber
 
@@ -46,11 +55,6 @@ export function Step2Mfa({ onBack, onSuccess }: Step2MfaProps) {
       setIsLoading(false)
     }
   }
-
-  const { watch } = useFormContext<LoginData>()
-  const loginMethod = watch("loginMethod")
-  const email = watch("email")
-  const phoneNumber = watch("phoneNumber")
 
   const {
     otp,
@@ -72,7 +76,7 @@ export function Step2Mfa({ onBack, onSuccess }: Step2MfaProps) {
     onComplete: verifyOtpWrapper,
     onResend: async () => {
       try {
-        const body: any = { password: watch("password") }
+        const body: Record<string, string> = { password: watch("password") }
         if (email) body.email = email
         if (phoneNumber) body.phone = phoneNumber
 
@@ -91,7 +95,7 @@ export function Step2Mfa({ onBack, onSuccess }: Step2MfaProps) {
  
   const formSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (isOtpComplete) {
+    if (!isLoading && isOtpComplete) {
       verifyOtpWrapper(otp.join(""))
     }
   }

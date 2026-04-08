@@ -1,7 +1,6 @@
 import * as React from "react"
-import { useState, useRef, useEffect } from "react"
 import { useFormContext } from "react-hook-form"
-import { useTranslations, useLocale } from "next-intl"
+import { useTranslations } from "next-intl"
 import Image from "next/image"
 import { cn } from "@nodiox/utils"
 import { X } from "lucide-react"
@@ -22,7 +21,6 @@ interface Step3EmailMfaProps {
 
 export function Step3EmailMfa({ onNext, onBack, isLoading, setIsLoading }: Step3EmailMfaProps) {
   const o = useTranslations("Onboarding")
-  const locale = useLocale()
   const { watch } = useFormContext<OnboardingData>()
 
   const shouldReduceMotion = useReducedMotion()
@@ -32,6 +30,8 @@ export function Step3EmailMfa({ onNext, onBack, isLoading, setIsLoading }: Step3
   const firstName = fullName.trim().split(" ")[0] || ""
 
   const verifyOtpWrapper = async (newOtpStr: string) => {
+    if (isLoading) return
+
     setIsLoading(true)
     setOtpError(null)
     try {
@@ -68,10 +68,16 @@ export function Step3EmailMfa({ onNext, onBack, isLoading, setIsLoading }: Step3
     length: 6,
     onComplete: verifyOtpWrapper,
     onResend: async () => {
-      // simulate delay
-      await new Promise(r => setTimeout(r, 500))
+      const res = await apiFetch("/api/auth/send-otp", {
+        method: "POST",
+        body: JSON.stringify({ email }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to resend verification code")
+      }
     }
-  });
+  })
 
   const handleNextClick = () => {
     if (isOtpComplete) {
