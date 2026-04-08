@@ -1,3 +1,4 @@
+import process from "node:process";
 import createNextIntlPlugin from "next-intl/plugin";
 
 const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
@@ -15,6 +16,7 @@ const nextConfig = {
     ],
   },
   async headers() {
+    const isProd = process.env.NODE_ENV === "production";
     return [
       {
         source: "/(.*)",
@@ -36,9 +38,19 @@ const nextConfig = {
             key: "Permissions-Policy",
             value: "camera=(), microphone=(), geolocation=(), browsing-topics=()",
           },
+          // Helps isolate browsing contexts and reduce XS leaks.
+          // If this breaks a specific integration, we can scope it by route.
+          {
+            key: "Cross-Origin-Opener-Policy",
+            value: "same-origin",
+          },
+          {
+            key: "Cross-Origin-Resource-Policy",
+            value: "same-site",
+          },
           {
             key: "Strict-Transport-Security",
-            value: "max-age=31536000; includeSubDomains; preload",
+            value: isProd ? "max-age=31536000; includeSubDomains; preload" : "",
           },
         ],
       },

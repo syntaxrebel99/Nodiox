@@ -5,6 +5,9 @@ import { EmailService } from "~/lib/email-service"
 import { enforceAuthRateLimits, loginLimiters } from "~/lib/rate-limit"
 import { z } from "zod"
 import { validateCsrf, rotateCsrfToken } from "~/lib/csrf"
+import { respondError } from "~/lib/security-response"
+
+import { normalizeEmail } from "~/lib/normalize-email"
 
 const loginSchema = z.object({
   email: z.string().email().optional(),
@@ -33,15 +36,18 @@ export async function POST(req: Request) {
       )
     }
 
-    const { email, phone, password } = result.data
+    let { email, phone, password } = result.data
+
+    // Normalize email if provided
+    if (email) {
+      email = normalizeEmail(email)
+    }
 
     // 2. Execute Tri-Layer Rate Limiting (IP + ID, Bounded Tarpit)
-    const ip = req.headers.get("x-forwarded-for") ?? "127.0.0.1"
-    
     try {
       await enforceAuthRateLimits({
         limiters: loginLimiters,
-        ip,
+        req,
         identifier: email || phone,
         namespace: "login"
       });
@@ -96,9 +102,6 @@ export async function POST(req: Request) {
     }
   } catch (error: any) {
     console.error("Login Error:", error)
-    return NextResponse.json(
-      { error: "An unexpected error occurred" },
-      { status: 500 }
-    )
+    return respondError(req, 500, "An unexpected error occurred")
   }
 }

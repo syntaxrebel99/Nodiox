@@ -22,6 +22,7 @@ import { Step4Phone } from "./step4-phone"
 import { Step5PhoneMfa } from "./step5-phone-mfa"
 import { Step6Password } from "./step6-password"
 import { Step7Success } from "./step7-success"
+import { StepSkeleton } from "./step-skeleton"
 
 const STORAGE_KEY = "nodiox_onboarding_draft"
 
@@ -76,7 +77,7 @@ export function SignupForm({
     // Stop persisting if we reached success state
     if (step === 7) return;
 
-    const subscription = methods.watch((value) => {
+    const subscription = methods.watch((value: any) => {
       // SEC-08: Explicitly exclude the password and confirmPassword from the saved draft object
       const { password, confirmPassword, ...safeValues } = value as OnboardingData
       const dataToSave = { 
@@ -172,106 +173,110 @@ export function SignupForm({
             className="fixed inset-0 pointer-events-none z-[100] h-full w-full" 
           />
           <AnimatePresence mode="wait" initial={false}>
-            {step === 1 && (
-              <Step1Name 
-                key="step1"
-                onNext={() => setStep(2)} 
-                isLoading={isLoading} 
-              />
-            )}
+            {isLoading && step < 7 ? (
+              <StepSkeleton key="skeleton" />
+            ) : (
+              <>
+                {step === 1 && (
+                  <Step1Name 
+                    key="step1"
+                    onNext={() => setStep(2)} 
+                    isLoading={isLoading} 
+                  />
+                )}
 
-            {step === 2 && (
-              <Step2Email 
-                key="step2"
-                onNext={async () => {
-                  setIsLoading(true)
-                  setServerError(null)
-                  try {
-                    const res = await apiFetch("/api/auth/send-otp", {
-                      method: "POST",
-                      body: JSON.stringify({ email: methods.getValues("email") }),
-                    })
-                    const data = await res.json()
-                    if (!res.ok) throw new Error(data.error || "Failed to send OTP")
-                    setStep(3)
-                  } catch (err: any) {
-                    setServerError(err.message)
-                  } finally {
-                    setIsLoading(false)
-                  }
-                }} 
-                onBack={() => setStep(1)} 
-                isLoading={isLoading}
-                serverError={serverError}
-                setServerError={setServerError}
-              />
-            )}
+                {step === 2 && (
+                  <Step2Email 
+                    key="step2"
+                    onNext={async () => {
+                      setIsLoading(true)
+                      setServerError(null)
+                      try {
+                        const res = await apiFetch("/api/auth/send-otp", {
+                          method: "POST",
+                          body: JSON.stringify({ email: methods.getValues("email") }),
+                        })
+                        const data = await res.json()
+                        if (!res.ok) throw new Error(data.error || "Failed to send OTP")
+                        setStep(3)
+                      } catch (err: any) {
+                        setServerError(err.message)
+                      } finally {
+                        setIsLoading(false)
+                      }
+                    }} 
+                    onBack={() => setStep(1)} 
+                    isLoading={isLoading}
+                    serverError={serverError}
+                    setServerError={setServerError}
+                  />
+                )}
 
-            {step === 3 && (
-              <Step3EmailMfa 
-                key="step3"
-                // SKIP PHONE FOR NOW: GOTO Step 6
-                onNext={() => setStep(6)} 
-                onBack={() => setStep(2)} 
-                isLoading={isLoading} 
-                setIsLoading={setIsLoading} 
-              />
-            )}
+                {step === 3 && (
+                  <Step3EmailMfa 
+                    key="step3"
+                    onNext={() => setStep(4)} 
+                    onBack={() => setStep(2)} 
+                    isLoading={isLoading} 
+                    setIsLoading={setIsLoading} 
+                  />
+                )}
 
-            {step === 4 && (
-              <Step4Phone 
-                key="step4"
-                onNext={async () => {
-                  setIsLoading(true)
-                  setServerError(null)
-                  try {
-                    const res = await apiFetch("/api/auth/send-otp", {
-                      method: "POST",
-                      body: JSON.stringify({ phone: methods.getValues("phoneNumber") }),
-                    })
-                    const data = await res.json()
-                    if (!res.ok) throw new Error(data.error || "Failed to send SMS") 
-                    setStep(5)
-                  } catch (err: any) {
-                    setServerError(err.message)
-                  } finally {
-                    setIsLoading(false)
-                  }
-                }} 
-                onBack={() => setStep(3)} 
-                isLoading={isLoading}
-                serverError={serverError}
-                setServerError={setServerError}
-              />
-            )}
+                {step === 4 && (
+                  <Step4Phone 
+                    key="step4"
+                    onNext={async () => {
+                      setIsLoading(true)
+                      setServerError(null)
+                      try {
+                        const res = await apiFetch("/api/auth/send-otp", {
+                          method: "POST",
+                          body: JSON.stringify({ phone: methods.getValues("phoneNumber") }),
+                        })
+                        const data = await res.json()
+                        if (!res.ok) throw new Error(data.error || "Failed to send SMS") 
+                        setStep(5)
+                      } catch (err: any) {
+                        setServerError(err.message)
+                      } finally {
+                        setIsLoading(false)
+                      }
+                    }} 
+                    onBack={() => setStep(3)} 
+                    isLoading={isLoading}
+                    serverError={serverError}
+                    setServerError={setServerError}
+                  />
+                )}
 
-            {step === 5 && (
-              <Step5PhoneMfa 
-                key="step5"
-                onNext={() => setStep(6)} 
-                onBack={() => setStep(4)} 
-                isLoading={isLoading} 
-                setIsLoading={setIsLoading} 
-              />
-            )}
+                {step === 5 && (
+                  <Step5PhoneMfa 
+                    key="step5"
+                    onNext={() => setStep(6)} 
+                    onBack={() => setStep(4)} 
+                    isLoading={isLoading} 
+                    setIsLoading={setIsLoading} 
+                  />
+                )}
 
-            {step === 6 && (
-              <Step6Password 
-                key="step6"
-                // BACK GOES TO STEP 3 SINCE PHONE IS SKIPPED
-                onBack={() => setStep(3)} 
-                isLoading={isLoading}
-                serverError={serverError}
-                setServerError={setServerError}
-              />
-            )}
+                {step === 6 && (
+                  <Step6Password 
+                    key="step6"
+                    onBack={() => setStep(5)} 
+                    isLoading={isLoading}
+                    serverError={serverError}
+                    setServerError={setServerError}
+                  />
+                )}
 
-            {step === 7 && (
-              <Step7Success 
-                key="step7"
-                firstName={firstName}
-                alreadyRegistered={alreadyRegistered}
-              />
+                {step === 7 && (
+                  <Step7Success 
+                    key="step7"
+                    firstName={firstName}
+                    alreadyRegistered={alreadyRegistered}
+                  />
+                )}
+              </>
             )}
           </AnimatePresence>
         </FieldGroup>

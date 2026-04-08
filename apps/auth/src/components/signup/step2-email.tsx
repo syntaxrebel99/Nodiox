@@ -9,7 +9,7 @@ import { Field, FieldLabel, Input, ShimmerButton } from "@nodiox/ui"
 import { type OnboardingData } from "~/lib/onboarding-schema"
 type AuthError = string;
 
-import { motion } from "framer-motion"
+import { motion, useReducedMotion } from "framer-motion"
 
 interface Step2EmailProps {
   onNext: () => void;
@@ -22,6 +22,8 @@ interface Step2EmailProps {
 export function Step2Email({ onNext, onBack, isLoading, serverError, setServerError }: Step2EmailProps) {
   const o = useTranslations("Onboarding")
   const { register, setValue, watch, trigger, formState: { errors } } = useFormContext<OnboardingData>()
+
+  const shouldReduceMotion = useReducedMotion()
 
   const [emailTouched, setEmailTouched] = useState(false)
   const [isEmailFocused, setIsEmailFocused] = useState(false)
@@ -56,18 +58,22 @@ export function Step2Email({ onNext, onBack, isLoading, serverError, setServerEr
   const showEmailErrorLine = emailTouched && !!errors.email
   const showEmailWarning = isEmailFocused && emailTouched && !!errors.email
 
+  const motionProps = shouldReduceMotion ? {} : {
+    initial: { opacity: 0, x: 20 },
+    animate: { opacity: 1, x: 0 },
+    exit: { opacity: 0, x: -20 },
+    transition: { duration: 0.3 }
+  }
+
   return (
     <motion.div 
-      initial={{ opacity: 0, x: 20 }}
-      animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: -20 }}
-      transition={{ duration: 0.3 }}
+      {...motionProps}
       className="flex flex-col gap-6"
     >
       <div className="flex flex-col items-center gap-1 text-center">
         <div className="relative mb-2 flex h-12 w-12 items-center justify-center">
           <Image
-            src="https://fonts.gstatic.com/s/e/notoemoji/latest/1f48c/512.gif"
+            src="https://fonts.gstatic.com/s/e/notoemoji/latest/1f4e7/512.webp"
             alt="💌"
             width={48}
             height={48}

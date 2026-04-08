@@ -10,7 +10,7 @@ import { type OnboardingData } from "~/lib/onboarding-schema"
 import { useMfaLogic } from "~/hooks/use-mfa-logic"
 import { apiFetch } from "~/lib/api-client"
 
-import { motion } from "framer-motion"
+import { motion, useReducedMotion } from "framer-motion"
 
 interface Step5PhoneMfaProps {
   onNext: () => void;
@@ -25,6 +25,8 @@ export function Step5PhoneMfa({ onNext, onBack, isLoading, setIsLoading }: Step5
   const o = useTranslations("Onboarding")
   const locale = useLocale()
   const { watch } = useFormContext<OnboardingData>()
+
+  const shouldReduceMotion = useReducedMotion()
 
   const phoneNumber = watch("phoneNumber") || ""
   const fullName = watch("fullName") || ""
@@ -78,18 +80,22 @@ export function Step5PhoneMfa({ onNext, onBack, isLoading, setIsLoading }: Step5
     }
   }
 
+  const motionProps = shouldReduceMotion ? {} : {
+    initial: { opacity: 0, x: 20 },
+    animate: { opacity: 1, x: 0 },
+    exit: { opacity: 0, x: -20 },
+    transition: { duration: 0.3 }
+  }
+
   return (
     <motion.div 
-      initial={{ opacity: 0, x: 20 }}
-      animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: -20 }}
-      transition={{ duration: 0.3 }}
+      {...motionProps}
       className="flex flex-col gap-6"
     >
       <div className="flex flex-col items-center gap-1 text-center">
         <div className="relative mb-2 flex h-12 w-12 items-center justify-center">
           <Image
-            src="https://fonts.gstatic.com/s/e/notoemoji/latest/1f9d0/512.gif"
+            src="https://fonts.gstatic.com/s/e/notoemoji/latest/1f9d1_1f3fb_200d_1f4bb/512.webp"
             alt="🧐"
             width={48}
             height={48}
@@ -113,7 +119,7 @@ export function Step5PhoneMfa({ onNext, onBack, isLoading, setIsLoading }: Step5
               ref={(el) => { phoneMfaInputRefs.current[index] = el }}
               type="text"
               inputMode="numeric"
-              pattern="\d*"
+              pattern="[0-9]*"
               maxLength={1}
               value={digit}
               dir="ltr"

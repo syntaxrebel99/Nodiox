@@ -8,8 +8,8 @@ import Image from "next/image"
 import { cn } from "@nodiox/utils"
 import { X, Check, Eye, EyeOff } from "lucide-react"
 import { Field, FieldLabel, Input, ShimmerButton } from "@nodiox/ui"
-import { type ResetPasswordData } from "~/lib/reset-password-schema"
-import { motion } from "framer-motion"
+import { type PasswordAndConfirmData as ResetPasswordData } from "~/lib/password-schemas"
+import { motion, useReducedMotion } from "framer-motion"
 import { useRouter } from "@nodiox/i18n"
 import { apiFetch } from "~/lib/api-client"
 
@@ -24,6 +24,8 @@ export function Step3NewPassword({ onBack, otp }: Step3NewPasswordProps) {
   const router = useRouter()
   
   const { register, watch, trigger, formState: { errors } } = useFormContext<ResetPasswordData>()
+
+  const shouldReduceMotion = useReducedMotion()
 
   const [showPassword, setShowPassword] = useState(false)
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
@@ -78,7 +80,7 @@ export function Step3NewPassword({ onBack, otp }: Step3NewPasswordProps) {
       const res = await apiFetch("/api/auth/reset-password/complete", {
         method: "POST",
         body: JSON.stringify({
-          code: otp === "session" ? undefined : otp,
+          code: otp === "session" || otp === "cookie" ? undefined : otp,
           password: password,
         }),
       })
@@ -107,13 +109,19 @@ export function Step3NewPassword({ onBack, otp }: Step3NewPasswordProps) {
     }
   }
 
+  const motionProps = shouldReduceMotion ? {} : {
+    initial: { opacity: 0 },
+    animate: { opacity: 1 },
+    transition: { duration: 0.3 }
+  }
+
   return (
     <div className="w-full">
       {isSuccess ? (
-        <div className="flex flex-col items-center gap-1 text-center">
+        <motion.div {...motionProps} className="flex flex-col items-center gap-1 text-center">
             <div className="relative mb-2 flex h-12 w-12 items-center justify-center">
               <Image
-                src="https://fonts.gstatic.com/s/e/notoemoji/latest/1f973/512.gif"
+                src="https://fonts.gstatic.com/s/e/notoemoji/latest/1f973/512.webp"
                 alt="🥳"
                 width={48}
                 height={48}
@@ -131,7 +139,7 @@ export function Step3NewPassword({ onBack, otp }: Step3NewPasswordProps) {
             >
               {t("backToLogin")}
             </ShimmerButton>
-        </div>
+        </motion.div>
       ) : (
         <form
           className="flex flex-col gap-4"
@@ -143,7 +151,7 @@ export function Step3NewPassword({ onBack, otp }: Step3NewPasswordProps) {
             <div className="flex flex-col items-center gap-1 text-center">
               <div className="relative mb-2 flex h-12 w-12 items-center justify-center">
                 <Image
-                  src="https://fonts.gstatic.com/s/e/notoemoji/latest/1f512/512.gif"
+                  src="https://fonts.gstatic.com/s/e/notoemoji/latest/1f512/512.webp"
                   alt="🔒"
                   width={48}
                   height={48}

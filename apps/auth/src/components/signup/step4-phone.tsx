@@ -9,7 +9,7 @@ import { Field, FieldLabel, Input, ShimmerButton } from "@nodiox/ui"
 import { type OnboardingData } from "~/lib/onboarding-schema"
 type AuthError = string;
 
-import { motion } from "framer-motion"
+import { motion, useReducedMotion } from "framer-motion"
 
 interface Step4PhoneProps {
   onNext: () => void;
@@ -23,6 +23,8 @@ export function Step4Phone({ onNext, onBack, isLoading, serverError, setServerEr
   const o = useTranslations("Onboarding")
   const { register, setValue, watch, trigger, formState: { errors } } = useFormContext<OnboardingData>()
 
+  const shouldReduceMotion = useReducedMotion()
+
   const [phoneTouched, setPhoneTouched] = useState(false)
   const [isPhoneFocused, setIsPhoneFocused] = useState(false)
 
@@ -31,7 +33,7 @@ export function Step4Phone({ onNext, onBack, isLoading, serverError, setServerEr
   const firstName = fullName.trim().split(" ")[0] || ""
 
   const handlePhoneChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const filtered = e.target.value.replace(/[^\d\s\-\+\(\)]/g, "")
+    const filtered = e.target.value.replace(/[^\d\s\-+()]/g, "")
     setValue("phoneNumber", filtered, { shouldValidate: true })
     if (phoneTouched) setPhoneTouched(false)
     if (serverError) setServerError(null)
@@ -55,18 +57,22 @@ export function Step4Phone({ onNext, onBack, isLoading, serverError, setServerEr
   const showPhoneErrorLine = phoneTouched && !!errors.phoneNumber
   const showPhoneWarning = isPhoneFocused && phoneTouched && !!errors.phoneNumber
 
+  const motionProps = shouldReduceMotion ? {} : {
+    initial: { opacity: 0, x: 20 },
+    animate: { opacity: 1, x: 0 },
+    exit: { opacity: 0, x: -20 },
+    transition: { duration: 0.3 }
+  }
+
   return (
     <motion.div 
-      initial={{ opacity: 0, x: 20 }}
-      animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: -20 }}
-      transition={{ duration: 0.3 }}
+      {...motionProps}
       className="flex flex-col gap-6"
     >
       <div className="flex flex-col items-center gap-1 text-center">
         <div className="relative mb-2 flex h-12 w-12 items-center justify-center">
           <Image
-            src="https://fonts.gstatic.com/s/e/notoemoji/latest/1f919_1f3fb/512.gif"
+            src="https://fonts.gstatic.com/s/e/notoemoji/latest/1f4f1/512.webp"
             alt="🤙🏻"
             width={48}
             height={48}

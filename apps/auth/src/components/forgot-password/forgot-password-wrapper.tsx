@@ -8,8 +8,8 @@ import { cn } from "@nodiox/utils"
 import { AnimatePresence } from "framer-motion"
 import { useTranslations } from "next-intl"
 
-import { createForgotPasswordSchema, type ForgotPasswordData } from "~/lib/forgot-password-schema"
-import { useRouter } from "next/navigation"
+import { createForgotPasswordSchema, type ForgotPasswordData } from "~/lib/password-schemas"
+import { useRouter } from "@nodiox/i18n"
 import { Step1Email } from "./step1-email"
 import { Step2Mfa } from "./step2-mfa"
 
@@ -46,8 +46,8 @@ export function ForgotPasswordWrapper({
             <Step2Mfa 
               key="step2"
               onBack={() => setStep(1)}
-              onSuccess={(token) => {
-                router.push(`/password-reset?token=${token}`)
+              onSuccess={() => {
+                router.push("/password-reset")
               }}
             />
           )}

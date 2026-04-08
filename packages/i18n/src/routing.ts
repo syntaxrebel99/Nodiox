@@ -7,7 +7,9 @@ import {createNavigation} from 'next-intl/navigation';
 export const routing = defineRouting({
   locales,
   defaultLocale,
-  localePrefix: 'as-needed'
+  // This repo routes as /[locale]/..., so the locale must always be present
+  // to avoid treating /forgot-password as locale="forgot-password".
+  localePrefix: 'always'
 });
 
 export const {Link, redirect, usePathname, useRouter, getPathname} =

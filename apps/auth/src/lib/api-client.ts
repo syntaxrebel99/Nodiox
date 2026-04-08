@@ -1,5 +1,3 @@
-import { globalCsrfToken, updateGlobalCsrfToken } from "~/components/providers/csrf-provider"
-
 /**
  * A wrapper around native fetch that automatically injects
  * the required CSRF headers and Content-Type for API Route handlers.
@@ -12,9 +10,13 @@ export async function apiFetch(url: string, options: RequestInit = {}) {
     headers.set("Content-Type", "application/json")
   }
 
-  // Inject current CSRF token securely
-  if (globalCsrfToken) {
-    headers.set("x-csrf-token", globalCsrfToken)
+  // Option C (Double Submit): read CSRF token from non-HttpOnly cookie
+  // and echo it in a header for state-changing requests.
+  const method = (options.method ?? "GET").toUpperCase()
+  const safeMethods = new Set(["GET", "HEAD", "OPTIONS"])
+  if (!safeMethods.has(method)) {
+    const csrfToken = readCookie("nodiox_csrf_token")
+    if (csrfToken) headers.set("x-csrf-token", csrfToken)
   }
 
   const response = await fetch(url, {
@@ -22,11 +24,15 @@ export async function apiFetch(url: string, options: RequestInit = {}) {
     headers,
   })
 
-  // If the server rotated the CSRF token, it will send the new one in the response header
-  const rotatedToken = response.headers.get("x-csrf-token")
-  if (rotatedToken) {
-    updateGlobalCsrfToken(rotatedToken)
-  }
-
   return response
+}
+
+function readCookie(name: string): string | null {
+  if (typeof document === "undefined") return null
+  const match = document.cookie.match(new RegExp(`(?:^|; )${escapeRegex(name)}=([^;]*)`))
+  return match ? decodeURIComponent(match[1]) : null
+}
+
+function escapeRegex(s: string) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }

@@ -5,6 +5,9 @@ import { EmailService } from "~/lib/email-service"
 import { enforceAuthRateLimits, otpVerifyLimiters } from "~/lib/rate-limit"
 import { z } from "zod"
 import { validateCsrf } from "~/lib/csrf"
+import { respondError } from "~/lib/security-response"
+
+const RESET_COOKIE = "nodiox_reset_token"
 
 const verifyOtpSchema = z.object({
   email: z.string().email(),
@@ -33,12 +36,10 @@ export async function POST(req: Request) {
     const { email, token } = result.data
 
     // 2. Execute Tri-Layer Rate Limiting (IP + ID, Bounded Tarpit)
-    const ip = req.headers.get("x-forwarded-for") ?? "127.0.0.1"
-    
     try {
       await enforceAuthRateLimits({
         limiters: otpVerifyLimiters,
-        ip,
+        req,
         identifier: email,
         namespace: "otp_verify"
       });
@@ -87,26 +88,37 @@ export async function POST(req: Request) {
 
     // 5. Generate and store a One-Time Reset Token (Double-Lock Security)
     const resetToken = crypto.randomUUID()
+    const resetTokenHash = EmailService.hashResetTokenV1(resetToken)
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString() // 10 mins
 
     await admin.from("verification_codes").insert({
       email,
-      code: resetToken,
+      // Store only a hash at rest; the raw token is returned to the client once.
+      code: `reset_v1.${resetTokenHash}`, // backward compatible storage
+      code_hash: resetTokenHash,
+      code_version: "reset_hmac_sha256_v1",
       type: "reset_token",
       expires_at: expiresAt,
     })
 
-    return NextResponse.json({ 
+    const response = NextResponse.json({
       success: true,
-      resetToken, // Send this to the frontend for the secure jump
-      message: "Identity verified! Redirecting to secure reset..."
+      message: "Identity verified! Redirecting to secure reset...",
     })
+
+    // Keep the raw token out of the URL; store it in a short-lived httpOnly cookie instead.
+    response.cookies.set(RESET_COOKIE, resetToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "strict",
+      path: "/",
+      maxAge: 10 * 60, // 10 minutes
+    })
+
+    return response
 
   } catch (error: any) {
     console.error("Verify OTP Reset Error:", error)
-    return NextResponse.json(
-      { error: "An unexpected error occurred" },
-      { status: 500 }
-    )
+    return respondError(req, 500, "An unexpected error occurred")
   }
 }

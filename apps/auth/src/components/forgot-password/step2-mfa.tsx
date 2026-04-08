@@ -8,16 +8,16 @@ import { X } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { ShimmerButton, Input } from "@nodiox/ui"
 import { useMfaLogic } from "~/hooks/use-mfa-logic"
-import { motion } from "framer-motion"
+import { motion, useReducedMotion } from "framer-motion"
 import { useFormContext } from "react-hook-form"
 
-import type { ForgotPasswordData } from "~/lib/forgot-password-schema"
+import type { ForgotPasswordData } from "~/lib/password-schemas"
 import { apiFetch } from "~/lib/api-client"
 // Removed forgotPassword API
 
 interface Step2MfaProps {
   onBack: () => void
-  onSuccess: (token: string) => void
+  onSuccess: () => void
 }
 
 export function Step2Mfa({ onBack, onSuccess }: Step2MfaProps) {
@@ -26,6 +26,8 @@ export function Step2Mfa({ onBack, onSuccess }: Step2MfaProps) {
 
   const { watch } = useFormContext<ForgotPasswordData>()
   const email = watch("email")
+
+  const shouldReduceMotion = useReducedMotion()
 
   const {
     otp,
@@ -70,7 +72,7 @@ export function Step2Mfa({ onBack, onSuccess }: Step2MfaProps) {
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || "Invalid verification code")
-      onSuccess(data.resetToken)
+      onSuccess()
     } catch (err: any) {
       setOtpError?.(err.message)
     } finally {
@@ -85,18 +87,22 @@ export function Step2Mfa({ onBack, onSuccess }: Step2MfaProps) {
     }
   }
  
+  const motionProps = shouldReduceMotion ? {} : {
+    initial: { opacity: 0, y: 20 },
+    animate: { opacity: 1, y: 0 },
+    exit: { opacity: 0, y: -20 },
+    transition: { duration: 0.3 }
+  }
+
   return (
     <motion.div 
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -20 }}
-      transition={{ duration: 0.3 }}
+      {...motionProps}
       className="flex flex-col gap-6"
     >
       <div className="flex flex-col items-center gap-1 text-center text-balance">
         <div className="relative mb-2 flex h-12 w-12 items-center justify-center">
           <Image
-            src="https://fonts.gstatic.com/s/e/notoemoji/latest/1f9d0/512.gif"
+            src="https://fonts.gstatic.com/s/e/notoemoji/latest/1f9d0/512.webp"
             alt="🧐"
             width={48}
             height={48}
@@ -117,7 +123,7 @@ export function Step2Mfa({ onBack, onSuccess }: Step2MfaProps) {
                 ref={(el) => { mfaInputRefs.current[index] = el }}
                 type="text"
                 inputMode="numeric"
-                pattern="\d*"
+                pattern="[0-9]*"
                 maxLength={1}
                 value={digit}
                 dir="ltr"

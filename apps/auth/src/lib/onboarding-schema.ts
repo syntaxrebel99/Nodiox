@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { passwordSchema } from "./password-schemas";
 
 /**
  * Validation schema for the onboarding flow.
@@ -42,7 +43,7 @@ export const createOnboardingSchema = (locale: string) => z.object({
   phoneNumber: z.string().optional().superRefine(
     (value, ctx) => {
       if (!value || value === "") return;
-      const cleaned = value.replace(/[\s\-\(\)]/g, "");
+      const cleaned = value.replace(/[\s\-()]/g, "");
 
       // Strict Algerian Mobile check (+213, 00213, or 0 followed by 5/6/7 and 8 digits)
       if (!/^(?:\+213|00213|0)[567]\d{8}$/.test(cleaned)) {
@@ -53,14 +54,7 @@ export const createOnboardingSchema = (locale: string) => z.object({
       }
     }
   ),
-  password: z
-    .string()
-    .min(8, "passwordMinLength")
-    .min(1, "passwordRequired")
-    .regex(/[a-z]/, "pwdReqLowercase")
-    .regex(/[A-Z]/, "pwdReqUppercase")
-    .regex(/[0-9]/, "pwdReqNumber")
-    .regex(/[^A-Za-z0-9]/, "pwdReqSpecial"),
+  password: passwordSchema(),
   confirmPassword: z.string().min(1, "passwordRequired"),
 }).refine((data) => data.password === data.confirmPassword, {
   message: "passwordsMustMatch",

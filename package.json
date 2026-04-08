@@ -11,6 +11,8 @@
     "clean": "turbo run clean && rm -rf node_modules"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
+    "@types/node": "^20.19.37",
     "turbo": "^2.5.3"
   },
   "engines": {

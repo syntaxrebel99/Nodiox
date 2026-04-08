@@ -9,7 +9,7 @@ import { Input, ShimmerButton } from "@nodiox/ui"
 import { type OnboardingData } from "~/lib/onboarding-schema"
 import { useMfaLogic } from "~/hooks/use-mfa-logic"
 import { apiFetch } from "~/lib/api-client"
-import { motion } from "framer-motion"
+import { motion, useReducedMotion } from "framer-motion"
 
 interface Step3EmailMfaProps {
   onNext: () => void;
@@ -24,6 +24,8 @@ export function Step3EmailMfa({ onNext, onBack, isLoading, setIsLoading }: Step3
   const o = useTranslations("Onboarding")
   const locale = useLocale()
   const { watch } = useFormContext<OnboardingData>()
+
+  const shouldReduceMotion = useReducedMotion()
 
   const email = watch("email") || ""
   const fullName = watch("fullName") || ""
@@ -77,18 +79,22 @@ export function Step3EmailMfa({ onNext, onBack, isLoading, setIsLoading }: Step3
     }
   }
 
+  const motionProps = shouldReduceMotion ? {} : {
+    initial: { opacity: 0, x: 20 },
+    animate: { opacity: 1, x: 0 },
+    exit: { opacity: 0, x: -20 },
+    transition: { duration: 0.3 }
+  }
+
   return (
     <motion.div 
-      initial={{ opacity: 0, x: 20 }}
-      animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: -20 }}
-      transition={{ duration: 0.3 }}
+      {...motionProps}
       className="flex flex-col gap-6"
     >
       <div className="flex flex-col items-center gap-1 text-center">
         <div className="relative mb-2 flex h-12 w-12 items-center justify-center">
           <Image
-            src="https://fonts.gstatic.com/s/e/notoemoji/latest/1f9d0/512.gif"
+            src="https://fonts.gstatic.com/s/e/notoemoji/latest/1f512/512.webp"
             alt="🧐"
             width={48}
             height={48}
@@ -112,7 +118,7 @@ export function Step3EmailMfa({ onNext, onBack, isLoading, setIsLoading }: Step3
               ref={(el) => { mfaInputRefs.current[index] = el }}
               type="text"
               inputMode="numeric"
-              pattern="\d*"
+              pattern="[0-9]*"
               maxLength={1}
               value={digit}
               isError={!!otpError}

@@ -1,8 +1,11 @@
 import { Resend } from "resend"
 import { createAdminClient } from "./supabase/admin"
 import crypto from "crypto"
+import { timingSafeEqual } from "crypto"
 import { getTranslations } from "next-intl/server"
 import { redisClient, hashIdentifier } from "./rate-limit"
+import { securityLog } from "./security-log"
+import { withRetry } from "./reliability"
 
 const resend = new Resend(process.env.RESEND_API_KEY)
 
@@ -82,6 +85,31 @@ function applyLayout(title: string, content: string, locale: string, disclaimer:
 }
 
 export const EmailService = {
+  _otpPepper() {
+    const pepper = process.env.OTP_PEPPER
+    if (process.env.NODE_ENV === "production" && (!pepper || pepper.length < 16)) {
+      throw new Error("Missing/weak OTP_PEPPER in production")
+    }
+    // Dev fallback to keep local environments functional.
+    return pepper ?? "dev-otp-pepper-change-me"
+  },
+
+  _hashOtpV1(code: string, saltB64: string) {
+    const pepper = EmailService._otpPepper()
+    return crypto
+      .createHmac("sha256", pepper)
+      .update(`v1:${saltB64}:${code}`)
+      .digest("base64url")
+  },
+
+  hashResetTokenV1(token: string) {
+    const pepper = EmailService._otpPepper()
+    return crypto
+      .createHmac("sha256", pepper)
+      .update(`reset_v1:${token}`)
+      .digest("base64url")
+  },
+
   /**
    * Generates, stores, and sends a 6-digit OTP via Resend.
    */
@@ -92,6 +120,9 @@ export const EmailService = {
       
       // 1. Generate 6-digit code
       const code = crypto.randomInt(100000, 999999).toString()
+      const saltB64 = crypto.randomBytes(16).toString("base64url")
+      const codeHash = EmailService._hashOtpV1(code, saltB64)
+      const storedCode = `v1.${saltB64}.${codeHash}`
       
       // 2. Set expiry (10 minutes)
       const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString()
@@ -111,7 +142,11 @@ export const EmailService = {
         .from("verification_codes")
         .insert({
           email,
-          code,
+          // Store only a salted+peppered hash (no plaintext OTP at rest).
+          code: storedCode,
+          code_hash: codeHash,
+          code_salt: saltB64,
+          code_version: "otp_hmac_sha256_v1",
           type,
           expires_at: expiresAt,
         })
@@ -121,28 +156,41 @@ export const EmailService = {
         throw new Error("Failed to generate verification code")
       }
 
-      // 5. Send via Resend
-      console.log(`[EmailService] Sending OTP to ${email} (Type: ${type}, Locale: ${locale})`)
-      const { error: resendError } = await resend.emails.send({
-        from: "Nodiox <onboarding@resend.dev>",
-        to: email,
-        subject: t('otpSubject'),
-        html: applyLayout(
-          t('otpTitle'), 
-          `
-          <p>${t('otpGreeting')}</p>
-          <p>${t('otpDescription')}</p>
-          <div class="code-container">
-            <span class="code">${code}</span>
-          </div>
-          <p>${t('otpLegal')}</p>
-          <p>${t('commonSafe')}<br>${t('commonTeam')}</p>
-          `,
-          locale,
-          t('securityDisclaimer'),
-          t('footerNotice'),
-          t('footerAddress')
-        ),
+      // 5. Send via Resend with Retry
+      const hashedEmail = hashIdentifier("email", email)
+      console.log(`[EmailService] Sending OTP to [${hashedEmail}] (Type: ${type}, Locale: ${locale})`)
+      
+      const { error: resendError } = await withRetry(async () => {
+        return await resend.emails.send({
+          from: "Nodiox <onboarding@resend.dev>",
+          to: email,
+          subject: t('otpSubject'),
+          html: applyLayout(
+            t('otpTitle'), 
+            `
+            <p>${t('otpGreeting')}</p>
+            <p>${t('otpDescription')}</p>
+            <div class="code-container">
+              <span class="code">${code}</span>
+            </div>
+            <p>${t('otpLegal')}</p>
+            <p>${t('commonSafe')}<br>${t('commonTeam')}</p>
+            `,
+            locale,
+            t('securityDisclaimer'),
+            t('footerNotice'),
+            t('footerAddress')
+          ),
+        })
+      }, {
+        onRetry: (err, attempt) => {
+          securityLog("warn", "email_send_retry", {
+            attempt,
+            emailHash: hashedEmail,
+            type: "otp",
+            error: err.message
+          })
+        }
       })
 
       if (resendError) {
@@ -165,7 +213,7 @@ export const EmailService = {
     const supabase = createAdminClient()
     
     // Evaluate Upstash Redis Hard-Lock attempts
-    const attemptsKey = `@nodiox/otp_attempts:${hashIdentifier('email', email)}`
+    const attemptsKey = `@nodiox/otp_attempts:${hashIdentifier('email', `${email}:${type}`)}`
     const attempts = await redisClient.incr(attemptsKey)
     
     // Set expiry for 15 minutes roughly tracking the OTP lifespan if first attempt
@@ -176,20 +224,86 @@ export const EmailService = {
     if (attempts >= 5) {
       // Invalidate the code entirely due to brute-force
       await supabase.from("verification_codes").delete().match({ email, type })
-      return { success: false, error: "Too many failed attempts. Code invalidated." }
+      securityLog("warn", "otp_verification_failed", {
+        channel: "email",
+        type,
+        emailHash: hashIdentifier("email", email),
+        reason: "too_many_attempts",
+      })
+      return { success: false, error: "Invalid or expired verification code" }
     }
 
     const { data, error: dbError } = await supabase
       .from("verification_codes")
       .select("*")
-      .match({ email, code, type })
+      .match({ email, type })
       .single()
 
-    if (dbError || !data) return { success: false, error: "Invalid or expired verification code" }
+    if (dbError || !data) {
+      securityLog("warn", "otp_verification_failed", {
+        channel: "email",
+        type,
+        emailHash: hashIdentifier("email", email),
+        reason: "missing_code_record",
+      })
+      return { success: false, error: "Invalid or expired verification code" }
+    }
 
     if (new Date(data.expires_at) < new Date()) {
       await supabase.from("verification_codes").delete().eq("id", data.id)
-      return { success: false, error: "Verification code has expired" }
+      securityLog("warn", "otp_verification_failed", {
+        channel: "email",
+        type,
+        emailHash: hashIdentifier("email", email),
+        reason: "expired",
+      })
+      return { success: false, error: "Invalid or expired verification code" }
+    }
+
+    // Strict format validation (6 digits). Keep response generic.
+    if (!/^\d{6}$/.test(code)) {
+      securityLog("warn", "otp_verification_failed", {
+        channel: "email",
+        type,
+        emailHash: hashIdentifier("email", email),
+        reason: "invalid_format",
+      })
+      return { success: false, error: "Invalid or expired verification code" }
+    }
+
+    // Constant-time verification against stored salted+peppered hash.
+    const storedSalt: string | null = data.code_salt ?? null
+    const storedHash: string | null = data.code_hash ?? null
+    const storedVersion: string | null = data.code_version ?? null
+
+    let saltB64 = "invalid"
+    let hashB64 = "invalid"
+    let expectedHash = "invalid"
+
+    if (storedVersion === "otp_hmac_sha256_v1" && storedSalt && storedHash) {
+      saltB64 = storedSalt
+      hashB64 = storedHash
+      expectedHash = EmailService._hashOtpV1(code, saltB64)
+    } else {
+      // Backward compatible path: parse v1.<salt>.<hash> stored in `code`
+      const legacy: string = data.code ?? ""
+      const parts = legacy.split(".")
+      saltB64 = parts.length === 3 && parts[0] === "v1" ? parts[1] : "invalid"
+      hashB64 = parts.length === 3 && parts[0] === "v1" ? parts[2] : "invalid"
+      expectedHash = EmailService._hashOtpV1(code, saltB64)
+    }
+
+    const a = Buffer.from(hashB64)
+    const b = Buffer.from(expectedHash)
+    const hashesMatch = a.length === b.length && timingSafeEqual(a, b)
+    if (!hashesMatch) {
+      securityLog("warn", "otp_verification_failed", {
+        channel: "email",
+        type,
+        emailHash: hashIdentifier("email", email),
+        reason: "hash_mismatch",
+      })
+      return { success: false, error: "Invalid or expired verification code" }
     }
 
     // Success! Delete the code so it cannot be used again
@@ -207,30 +321,42 @@ export const EmailService = {
   async sendPasswordChangedAlert(email: string, locale: string = 'en') {
     try {
       const t = await getTranslations({ locale, namespace: 'Emails' })
-      console.log(`[EmailService] Sending password changed alert to ${email} (Locale: ${locale})`)
+      const hashedEmail = hashIdentifier("email", email)
+      console.log(`[EmailService] Sending password changed alert to [${hashedEmail}] (Locale: ${locale})`)
 
-      const { error: resendError } = await resend.emails.send({
-        from: "Nodiox Security <onboarding@resend.dev>",
-        to: email,
-        subject: t('passwordChangedSubject'),
-        html: applyLayout(
-          t('passwordChangedTitle'), 
-          `
-          <p>${t('otpGreeting')}</p>
-          <p>${t('passwordChangedDescription')}</p>
-          <div class="alert">
-            <span class="alert-title">${t('passwordChangedAlertTitle')}</span>
-            <p style="margin: 0; font-size: 14px; color: inherit; opacity: 0.9;">
-              ${t('passwordChangedAlertBody')}
-            </p>
-          </div>
-          <p>${t('commonSafe')}<br>${t('commonTeam')}</p>
-          `,
-          locale,
-          t('securityDisclaimer'),
-          t('footerNotice'),
-          t('footerAddress')
-        ),
+      const { error: resendError } = await withRetry(async () => {
+        return await resend.emails.send({
+          from: "Nodiox Security <onboarding@resend.dev>",
+          to: email,
+          subject: t('passwordChangedSubject'),
+          html: applyLayout(
+            t('passwordChangedTitle'), 
+            `
+            <p>${t('otpGreeting')}</p>
+            <p>${t('passwordChangedDescription')}</p>
+            <div class="alert">
+              <span class="alert-title">${t('passwordChangedAlertTitle')}</span>
+              <p style="margin: 0; font-size: 14px; color: inherit; opacity: 0.9;">
+                ${t('passwordChangedAlertBody')}
+              </p>
+            </div>
+            <p>${t('commonSafe')}<br>${t('commonTeam')}</p>
+            `,
+            locale,
+            t('securityDisclaimer'),
+            t('footerNotice'),
+            t('footerAddress')
+          ),
+        })
+      }, {
+        onRetry: (err, attempt) => {
+          securityLog("warn", "email_send_retry", {
+            attempt,
+            emailHash: hashedEmail,
+            type: "password_alert",
+            error: err.message
+          })
+        }
       })
 
       if (resendError) {
@@ -250,29 +376,41 @@ export const EmailService = {
   async sendSignupAttemptAlert(email: string, locale: string = 'en') {
     try {
       const t = await getTranslations({ locale, namespace: 'Emails' })
-      console.log(`[EmailService] Sending signup attempt alert to ${email} (Locale: ${locale})`)
+      const hashedEmail = hashIdentifier("email", email)
+      console.log(`[EmailService] Sending signup attempt alert to [${hashedEmail}] (Locale: ${locale})`)
 
-      const { error: resendError } = await resend.emails.send({
-        from: "Nodiox Security <onboarding@resend.dev>",
-        to: email,
-        subject: t('signupAttemptSubject'),
-        html: applyLayout(
-          t('signupAttemptTitle'), 
-          `
-          <p>${t('otpGreeting')}</p>
-          <p>${t('signupAttemptDescription')}</p>
-          <p>${t('signupAttemptReason')}</p>
-          <p><strong>${t('signupAttemptAction')}</strong></p>
-          <div class="button-container">
-            <a href="${process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'}/login" class="button">${t('signupAttemptButton')}</a>
-          </div>
-          <p>${t('commonSafe')}<br>${t('commonTeam')}</p>
-          `,
-          locale,
-          t('securityDisclaimer'),
-          t('footerNotice'),
-          t('footerAddress')
-        ),
+      const { error: resendError } = await withRetry(async () => {
+        return await resend.emails.send({
+          from: "Nodiox Security <onboarding@resend.dev>",
+          to: email,
+          subject: t('signupAttemptSubject'),
+          html: applyLayout(
+            t('signupAttemptTitle'), 
+            `
+            <p>${t('otpGreeting')}</p>
+            <p>${t('signupAttemptDescription')}</p>
+            <p>${t('signupAttemptReason')}</p>
+            <p><strong>${t('signupAttemptAction')}</strong></p>
+            <div class="button-container">
+              <a href="${process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'}/login" class="button">${t('signupAttemptButton')}</a>
+            </div>
+            <p>${t('commonSafe')}<br>${t('commonTeam')}</p>
+            `,
+            locale,
+            t('securityDisclaimer'),
+            t('footerNotice'),
+            t('footerAddress')
+          ),
+        })
+      }, {
+        onRetry: (err, attempt) => {
+          securityLog("warn", "email_send_retry", {
+            attempt,
+            emailHash: hashedEmail,
+            type: "signup_alert",
+            error: err.message
+          })
+        }
       })
 
       if (resendError) {
@@ -294,27 +432,39 @@ export const EmailService = {
       const t = await getTranslations({ locale, namespace: 'Emails' })
       const firstName = (fullName || 'User').split(' ')[0]
       
-      console.log(`[EmailService] Sending welcome email to ${email} (Locale: ${locale})`)
+      const hashedEmail = hashIdentifier("email", email)
+      console.log(`[EmailService] Sending welcome email to [${hashedEmail}] (Locale: ${locale})`)
 
-      const { error: resendError } = await resend.emails.send({
-        from: "Nodiox <onboarding@resend.dev>",
-        to: email,
-        subject: t('welcomeSubject', { firstName }),
-        html: applyLayout(
-          t('welcomeTitle', { firstName }), 
-          `
-          <p>${t('welcomeDescription')}</p>
-          <p>${t('welcomeAction')}</p>
-          <div class="button-container">
-            <a href="${process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'}/dashboard" class="button">${t('welcomeButton')}</a>
-          </div>
-          <p>${t('welcomeTeam')}<br>${t('commonTeam')}</p>
-          `,
-          locale,
-          t('securityDisclaimer'),
-          t('footerNotice'),
-          t('footerAddress')
-        ),
+      const { error: resendError } = await withRetry(async () => {
+        return await resend.emails.send({
+          from: "Nodiox <onboarding@resend.dev>",
+          to: email,
+          subject: t('welcomeSubject', { firstName }),
+          html: applyLayout(
+            t('welcomeTitle', { firstName }), 
+            `
+            <p>${t('welcomeDescription')}</p>
+            <p>${t('welcomeAction')}</p>
+            <div class="button-container">
+              <a href="${process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'}/dashboard" class="button">${t('welcomeButton')}</a>
+            </div>
+            <p>${t('welcomeTeam')}<br>${t('commonTeam')}</p>
+            `,
+            locale,
+            t('securityDisclaimer'),
+            t('footerNotice'),
+            t('footerAddress')
+          ),
+        })
+      }, {
+        onRetry: (err, attempt) => {
+          securityLog("warn", "email_send_retry", {
+            attempt,
+            emailHash: hashedEmail,
+            type: "welcome",
+            error: err.message
+          })
+        }
       })
 
       if (resendError) {

@@ -9,7 +9,7 @@ import { Field, FieldLabel, Input, ShimmerButton } from "@nodiox/ui"
 import { type OnboardingData } from "~/lib/onboarding-schema"
 type AuthError = string;
 
-import { motion } from "framer-motion"
+import { motion, useReducedMotion } from "framer-motion"
 
 interface Step6PasswordProps {
   onBack: () => void;
@@ -21,6 +21,8 @@ interface Step6PasswordProps {
 export function Step6Password({ onBack, isLoading, serverError, setServerError }: Step6PasswordProps) {
   const o = useTranslations("Onboarding")
   const { register, watch, formState: { errors } } = useFormContext<OnboardingData>()
+
+  const shouldReduceMotion = useReducedMotion()
 
   const [showPassword, setShowPassword] = useState(false)
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
@@ -53,18 +55,22 @@ export function Step6Password({ onBack, isLoading, serverError, setServerError }
     if (serverError) setServerError(null)
   }
 
+  const motionProps = shouldReduceMotion ? {} : {
+    initial: { opacity: 0, x: 20 },
+    animate: { opacity: 1, x: 0 },
+    exit: { opacity: 0, x: -20 },
+    transition: { duration: 0.3 }
+  }
+
   return (
     <motion.div 
-      initial={{ opacity: 0, x: 20 }}
-      animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: -20 }}
-      transition={{ duration: 0.3 }}
+      {...motionProps}
       className="flex flex-col gap-6"
     >
       <div className="flex flex-col items-center gap-1 text-center">
         <div className="relative mb-2 flex h-12 w-12 items-center justify-center">
           <Image
-            src="https://fonts.gstatic.com/s/e/notoemoji/latest/1f512/512.gif"
+            src="https://fonts.gstatic.com/s/e/notoemoji/latest/1f510/512.webp"
             alt="🔒"
             width={48}
             height={48}

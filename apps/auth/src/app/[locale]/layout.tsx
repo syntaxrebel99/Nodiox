@@ -6,8 +6,7 @@ import { Providers } from "@nodiox/ui";
 import { NextIntlClientProvider } from "next-intl";
 import { getMessages, getTimeZone } from 'next-intl/server';
 import "@nodiox/ui/src/styles/globals.css";
-import { CsrfProvider } from "~/components/providers/csrf-provider";
-import { cookies, headers } from "next/headers";
+import { headers } from "next/headers";
 
 const ibmArabic = IBM_Plex_Sans_Arabic({
   weight: ["300", "400", "500", "600", "700"],
@@ -32,8 +31,6 @@ export default async function RootLayout({
   const direction = isRtl ? 'rtl' : 'ltr';
   const messages = await getMessages();
   const timeZone = await getTimeZone();
-  const cookieStore = await cookies();
-  const csrfToken = cookieStore.get("nodiox_csrf_token")?.value || null;
   const headerStore = await headers();
   const nonce = headerStore.get("x-nonce") || undefined;
 
@@ -48,9 +45,7 @@ export default async function RootLayout({
       <body className="min-h-full flex flex-col" suppressHydrationWarning>
         <NextIntlClientProvider messages={messages} locale={locale} timeZone={timeZone}>
           <Providers messages={messages} locale={locale} direction={direction as "ltr" | "rtl"} timeZone={timeZone} nonce={nonce}>
-            <CsrfProvider token={csrfToken}>
-              {children}
-            </CsrfProvider>
+            {children}
           </Providers>
         </NextIntlClientProvider>
       </body>

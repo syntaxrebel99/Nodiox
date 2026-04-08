@@ -6,6 +6,10 @@ import { enforceAuthRateLimits, otpVerifyLimiters } from "~/lib/rate-limit"
 import { z } from "zod"
 import type { EmailOtpType, MobileOtpType } from "@supabase/supabase-js"
 import { validateCsrf, rotateCsrfToken } from "~/lib/csrf"
+import { redisClient, hashIdentifier } from "~/lib/rate-limit"
+import { respondError } from "~/lib/security-response"
+
+import { normalizeEmail } from "~/lib/normalize-email"
 
 const verifyOtpSchema = z.object({
   email: z.string().email().optional(),
@@ -35,15 +39,18 @@ export async function POST(req: Request) {
       )
     }
 
-    const { email, phone, token, type } = result.data
+    let { email, phone, token, type } = result.data
+
+    // Normalize email if provided
+    if (email) {
+      email = normalizeEmail(email)
+    }
 
     // 2. Execute Tri-Layer Rate Limiting (IP + ID, Bounded Tarpit)
-    const ip = req.headers.get("x-forwarded-for") ?? "127.0.0.1"
-    
     try {
       await enforceAuthRateLimits({
         limiters: otpVerifyLimiters,
-        ip,
+        req,
         identifier: email || phone,
         namespace: "otp_verify"
       });
@@ -73,9 +80,13 @@ export async function POST(req: Request) {
       if (type === "signup") {
         // For signup, we don't have a user yet. We set a secure cookie to authorize the 'set-password' step.
         const response = NextResponse.json({ success: true, message: "Email verified. Please set your password." })
-        
-        // Set a short-lived (15 min) secure cookie with the verified email
-        response.cookies.set("nodiox_signup_email", email, {
+
+        // Use an opaque, short-lived token (no PII in cookie). Email is stored server-side in Redis for 15m.
+        const signupToken = crypto.randomUUID()
+        const signupTokenHash = hashIdentifier("signup_token", signupToken)
+        await redisClient.set(`@nodiox/signup_token:${signupTokenHash}`, email, { ex: 60 * 15 })
+
+        response.cookies.set("nodiox_signup_token", signupToken, {
           httpOnly: true,
           secure: process.env.NODE_ENV === "production",
           sameSite: "lax",
@@ -149,9 +160,6 @@ export async function POST(req: Request) {
     return response
   } catch (error: any) {
     console.error("Verify OTP Error:", error)
-    return NextResponse.json(
-      { error: "An unexpected error occurred" },
-      { status: 500 }
-    )
+    return respondError(req, 500, "An unexpected error occurred")
   }
 }

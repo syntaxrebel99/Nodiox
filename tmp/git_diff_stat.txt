@@ -1,0 +1,23 @@
+ apps/auth/next.config.mjs                          |  14 ++-
+ apps/auth/src/app/[locale]/(auth)/page.tsx         |   9 +-
+ .../app/[locale]/(auth)/password-reset/page.tsx    |  16 ++-
+ apps/auth/src/app/[locale]/layout.tsx              |   9 +-
+ .../app/api/auth/forgot-password/send-otp/route.ts |  10 +-
+ .../api/auth/forgot-password/verify-otp/route.ts   |  34 +++++--
+ apps/auth/src/app/api/auth/login/route.ts          |  10 +-
+ .../app/api/auth/reset-password/complete/route.ts  |  60 ++++++++---
+ apps/auth/src/app/api/auth/send-otp/route.ts       |  10 +-
+ apps/auth/src/app/api/auth/set-password/route.ts   |  33 ++++--
+ apps/auth/src/app/api/auth/verify-otp/route.ts     |  21 ++--
+ .../forgot-password/forgot-password-wrapper.tsx    |   6 +-
+ .../src/components/forgot-password/step2-mfa.tsx   |   4 +-
+ .../forgot-password/step3-new-password.tsx         |   2 +-
+ apps/auth/src/components/password-reset-form.tsx   |   2 +-
+ .../src/components/providers/csrf-provider.tsx     |  36 -------
+ apps/auth/src/lib/api-client.ts                    |  28 ++++--
+ apps/auth/src/lib/csrf.ts                          |  43 +++++---
+ apps/auth/src/lib/email-service.ts                 | 112 +++++++++++++++++++--
+ apps/auth/src/lib/rate-limit.ts                    |  70 +++++++++++--
+ apps/auth/src/proxy.ts                             |  85 ++++++++--------
+ packages/i18n/src/routing.ts                       |   4 +-
+ 22 files changed, 417 insertions(+), 201 deletions(-)

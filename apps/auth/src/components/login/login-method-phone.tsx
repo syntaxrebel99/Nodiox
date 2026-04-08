@@ -23,7 +23,7 @@ export function LoginMethodPhone({ isLoading, serverError }: LoginMethodPhonePro
   const [isPhoneFocused, setIsPhoneFocused] = useState(false)
  
   const handlePhoneChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const filtered = e.target.value.replace(/[^\d\s\-\+\(\)]/g, "")
+    const filtered = e.target.value.replace(/[^\d\s\-+()]/g, "")
     setValue("phoneNumber", filtered, { shouldValidate: true })
     if (phoneTouched) setPhoneTouched(false)
   }

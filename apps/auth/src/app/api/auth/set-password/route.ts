@@ -1,10 +1,13 @@
-import { NextResponse } from "next/server"
+import { NextResponse, after } from "next/server"
 import { cookies } from "next/headers"
 import { createClient } from "~/lib/supabase/server"
 import { createAdminClient } from "~/lib/supabase/admin"
 import { EmailService } from "~/lib/email-service"
 import { z } from "zod"
 import { validateCsrf, rotateCsrfToken } from "~/lib/csrf"
+import { validatePasswordPolicy } from "~/lib/password-policy"
+import { redisClient, hashIdentifier } from "~/lib/rate-limit"
+import { respondError } from "~/lib/security-response"
 
 const setPasswordSchema = z.object({
   password: z.string().min(8),
@@ -32,9 +35,23 @@ export async function POST(req: Request) {
 
     const { password, fullName, phone } = result.data
 
-    // 1. Check for the Secure Signup Verification Cookie
+    const policy = validatePasswordPolicy(password)
+    if (!policy.ok) {
+      return NextResponse.json(
+        { error: "Password does not meet security requirements", code: policy.error },
+        { status: 400 }
+      )
+    }
+
+    // 1. Check for the Secure Signup Verification Cookie (opaque token)
     const cookieStore = await cookies()
-    const verifiedEmail = cookieStore.get("nodiox_signup_email")?.value
+    const signupToken = cookieStore.get("nodiox_signup_token")?.value
+
+    const signupTokenHash = signupToken ? hashIdentifier("signup_token", signupToken) : null
+    const verifiedEmail =
+      signupTokenHash
+        ? await redisClient.get<string>(`@nodiox/signup_token:${signupTokenHash}`)
+        : null
 
     if (!verifiedEmail) {
       return NextResponse.json(
@@ -68,14 +85,24 @@ export async function POST(req: Request) {
       )
     }
 
-    // 3. Clear the signup verification cookie
+    // 3. Clear the signup verification cookie + redis token
     const response = NextResponse.json({ success: true, user: userData.user })
-    response.cookies.delete("nodiox_signup_email")
+    response.cookies.delete("nodiox_signup_token")
+    if (signupTokenHash) {
+      await redisClient.del(`@nodiox/signup_token:${signupTokenHash}`)
+    }
 
-    // 4. Send Welcome Email
+    // 4. Schedule Welcome Email (Non-blocking)
     const locale = cookieStore.get("NEXT_LOCALE")?.value || "en"
     if (verifiedEmail) {
-      await EmailService.sendWelcomeEmail(verifiedEmail, fullName, locale)
+      after(async () => {
+        try {
+          await EmailService.sendWelcomeEmail(verifiedEmail, fullName, locale)
+        } catch (err) {
+          // Failure here doesn't block the response, but we log it.
+          console.error("[After] Failed to send welcome email:", err)
+        }
+      })
     }
 
     // 5. Log the user in automatically (Bridge to Session)
@@ -98,9 +125,6 @@ export async function POST(req: Request) {
     return response
   } catch (error: any) {
     console.error("Set Password Error:", error)
-    return NextResponse.json(
-      { error: "An unexpected error occurred" },
-      { status: 500 }
-    )
+    return respondError(req, 500, "An unexpected error occurred")
   }
 }

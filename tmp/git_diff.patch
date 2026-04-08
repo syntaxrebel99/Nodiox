@@ -1,0 +1,1287 @@
+diff --git a/apps/auth/next.config.mjs b/apps/auth/next.config.mjs
+index d6991a0..f7a5de4 100644
+--- a/apps/auth/next.config.mjs
++++ b/apps/auth/next.config.mjs
+@@ -1,3 +1,4 @@
++import process from "node:process";
+ import createNextIntlPlugin from "next-intl/plugin";
+ 
+ const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
+@@ -15,6 +16,7 @@ const nextConfig = {
+     ],
+   },
+   async headers() {
++    const isProd = process.env.NODE_ENV === "production";
+     return [
+       {
+         source: "/(.*)",
+@@ -36,9 +38,19 @@ const nextConfig = {
+             key: "Permissions-Policy",
+             value: "camera=(), microphone=(), geolocation=(), browsing-topics=()",
+           },
++          // Helps isolate browsing contexts and reduce XS leaks.
++          // If this breaks a specific integration, we can scope it by route.
++          {
++            key: "Cross-Origin-Opener-Policy",
++            value: "same-origin",
++          },
++          {
++            key: "Cross-Origin-Resource-Policy",
++            value: "same-site",
++          },
+           {
+             key: "Strict-Transport-Security",
+-            value: "max-age=31536000; includeSubDomains; preload",
++            value: isProd ? "max-age=31536000; includeSubDomains; preload" : "",
+           },
+         ],
+       },
+diff --git a/apps/auth/src/app/[locale]/(auth)/page.tsx b/apps/auth/src/app/[locale]/(auth)/page.tsx
+index 787f09d..e37f6b4 100644
+--- a/apps/auth/src/app/[locale]/(auth)/page.tsx
++++ b/apps/auth/src/app/[locale]/(auth)/page.tsx
+@@ -1,5 +1,10 @@
+ import { redirect } from "next/navigation"
+ 
+-export default function AuthRoot() {
+-  redirect("/login")
++export default async function AuthRoot({
++  params,
++}: {
++  params: Promise<{ locale: string }>
++}) {
++  const { locale } = await params
++  redirect(`/${locale}/login`)
+ }
+diff --git a/apps/auth/src/app/[locale]/(auth)/password-reset/page.tsx b/apps/auth/src/app/[locale]/(auth)/password-reset/page.tsx
+index 1aa7899..ac5ff78 100644
+--- a/apps/auth/src/app/[locale]/(auth)/password-reset/page.tsx
++++ b/apps/auth/src/app/[locale]/(auth)/password-reset/page.tsx
+@@ -1,8 +1,11 @@
+ import { PasswordResetForm } from "~/components/password-reset-form"
+ import { AuthPageLayout } from "~/components/layout/auth-page-layout"
+ import { createClient } from "~/lib/supabase/server"
+-import { redirect } from "next/navigation"
++import { redirect } from "@nodiox/i18n"
+ import type { Metadata } from "next"
++import { cookies } from "next/headers"
++
++const RESET_COOKIE = "nodiox_reset_token"
+ 
+ export async function generateMetadata(): Promise<Metadata> {
+   return {
+@@ -12,26 +15,33 @@ export async function generateMetadata(): Promise<Metadata> {
+ }
+ 
+ export default async function PasswordResetPage({
++  params,
+   searchParams,
+ }: {
++  params: Promise<{ locale: string }>
+   searchParams: Promise<{ [key: string]: string | string[] | undefined }>
+ }) {
++  const { locale } = await params
+   const codeParam = (await searchParams).code
+   const code = Array.isArray(codeParam) ? codeParam[0] : codeParam
+   
+   const tokenParam = (await searchParams).token
+   const token = Array.isArray(tokenParam) ? tokenParam[0] : tokenParam
+ 
++  const cookieStore = await cookies()
++  const resetCookieToken = cookieStore.get(RESET_COOKIE)?.value
++
+   // PROTECTION:
+   // 1. If a 'code' exists (link-based), we allow.
+   // 2. If a 'token' exists (OTP-based secure jump), we allow.
+   // 3. If no code/token, we check if an authenticated session exists (OTP-based session bridge).
+-  if (!code && !token) {
++  // 4. If we have a short-lived reset cookie, we allow (token stays out of URL).
++  if (!code && !token && !resetCookieToken) {
+     const supabase = await createClient()
+     const { data: { session } } = await supabase.auth.getSession()
+ 
+     if (!session) {
+-      redirect("/forgot-password")
++      redirect({ href: "/forgot-password", locale })
+     }
+   }
+ 
+diff --git a/apps/auth/src/app/[locale]/layout.tsx b/apps/auth/src/app/[locale]/layout.tsx
+index e48d754..f247164 100644
+--- a/apps/auth/src/app/[locale]/layout.tsx
++++ b/apps/auth/src/app/[locale]/layout.tsx
+@@ -6,8 +6,7 @@ import { Providers } from "@nodiox/ui";
+ import { NextIntlClientProvider } from "next-intl";
+ import { getMessages, getTimeZone } from 'next-intl/server';
+ import "@nodiox/ui/src/styles/globals.css";
+-import { CsrfProvider } from "~/components/providers/csrf-provider";
+-import { cookies, headers } from "next/headers";
++import { headers } from "next/headers";
+ 
+ const ibmArabic = IBM_Plex_Sans_Arabic({
+   weight: ["300", "400", "500", "600", "700"],
+@@ -32,8 +31,6 @@ export default async function RootLayout({
+   const direction = isRtl ? 'rtl' : 'ltr';
+   const messages = await getMessages();
+   const timeZone = await getTimeZone();
+-  const cookieStore = await cookies();
+-  const csrfToken = cookieStore.get("nodiox_csrf_token")?.value || null;
+   const headerStore = await headers();
+   const nonce = headerStore.get("x-nonce") || undefined;
+ 
+@@ -48,9 +45,7 @@ export default async function RootLayout({
+       <body className="min-h-full flex flex-col" suppressHydrationWarning>
+         <NextIntlClientProvider messages={messages} locale={locale} timeZone={timeZone}>
+           <Providers messages={messages} locale={locale} direction={direction as "ltr" | "rtl"} timeZone={timeZone} nonce={nonce}>
+-            <CsrfProvider token={csrfToken}>
+-              {children}
+-            </CsrfProvider>
++            {children}
+           </Providers>
+         </NextIntlClientProvider>
+       </body>
+diff --git a/apps/auth/src/app/api/auth/forgot-password/send-otp/route.ts b/apps/auth/src/app/api/auth/forgot-password/send-otp/route.ts
+index be7d528..cfb220a 100644
+--- a/apps/auth/src/app/api/auth/forgot-password/send-otp/route.ts
++++ b/apps/auth/src/app/api/auth/forgot-password/send-otp/route.ts
+@@ -5,6 +5,7 @@ import { EmailService } from "~/lib/email-service"
+ import { createAdminClient } from "~/lib/supabase/admin"
+ import { z } from "zod"
+ import { validateCsrf } from "~/lib/csrf"
++import { respondError } from "~/lib/security-response"
+ 
+ const forgotPasswordSchema = z.object({
+   email: z.string().email(),
+@@ -32,12 +33,10 @@ export async function POST(req: Request) {
+     const { email } = result.data
+ 
+     // 2. Execute Tri-Layer Rate Limiting (IP + ID, Bounded Tarpit)
+-    const ip = req.headers.get("x-forwarded-for") ?? "127.0.0.1"
+-    
+     try {
+       await enforceAuthRateLimits({
+         limiters: [...otpSendLimiters, otpSendCooldownLimit],
+-        ip,
++        req,
+         identifier: email,
+         namespace: "otp_send"
+       });
+@@ -86,9 +85,6 @@ export async function POST(req: Request) {
+     }
+   } catch (error: any) {
+     console.error("Forgot OTP Critical Error:", error)
+-    return NextResponse.json(
+-      { error: "An unexpected error occurred" },
+-      { status: 500 }
+-    )
++    return respondError(req, 500, "An unexpected error occurred")
+   }
+ }
+diff --git a/apps/auth/src/app/api/auth/forgot-password/verify-otp/route.ts b/apps/auth/src/app/api/auth/forgot-password/verify-otp/route.ts
+index 439e6ee..9741154 100644
+--- a/apps/auth/src/app/api/auth/forgot-password/verify-otp/route.ts
++++ b/apps/auth/src/app/api/auth/forgot-password/verify-otp/route.ts
+@@ -5,6 +5,9 @@ import { EmailService } from "~/lib/email-service"
+ import { enforceAuthRateLimits, otpVerifyLimiters } from "~/lib/rate-limit"
+ import { z } from "zod"
+ import { validateCsrf } from "~/lib/csrf"
++import { respondError } from "~/lib/security-response"
++
++const RESET_COOKIE = "nodiox_reset_token"
+ 
+ const verifyOtpSchema = z.object({
+   email: z.string().email(),
+@@ -33,12 +36,10 @@ export async function POST(req: Request) {
+     const { email, token } = result.data
+ 
+     // 2. Execute Tri-Layer Rate Limiting (IP + ID, Bounded Tarpit)
+-    const ip = req.headers.get("x-forwarded-for") ?? "127.0.0.1"
+-    
+     try {
+       await enforceAuthRateLimits({
+         limiters: otpVerifyLimiters,
+-        ip,
++        req,
+         identifier: email,
+         namespace: "otp_verify"
+       });
+@@ -87,26 +88,37 @@ export async function POST(req: Request) {
+ 
+     // 5. Generate and store a One-Time Reset Token (Double-Lock Security)
+     const resetToken = crypto.randomUUID()
++    const resetTokenHash = EmailService.hashResetTokenV1(resetToken)
+     const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString() // 10 mins
+ 
+     await admin.from("verification_codes").insert({
+       email,
+-      code: resetToken,
++      // Store only a hash at rest; the raw token is returned to the client once.
++      code: `reset_v1.${resetTokenHash}`, // backward compatible storage
++      code_hash: resetTokenHash,
++      code_version: "reset_hmac_sha256_v1",
+       type: "reset_token",
+       expires_at: expiresAt,
+     })
+ 
+-    return NextResponse.json({ 
++    const response = NextResponse.json({
+       success: true,
+-      resetToken, // Send this to the frontend for the secure jump
+-      message: "Identity verified! Redirecting to secure reset..."
++      message: "Identity verified! Redirecting to secure reset...",
+     })
+ 
++    // Keep the raw token out of the URL; store it in a short-lived httpOnly cookie instead.
++    response.cookies.set(RESET_COOKIE, resetToken, {
++      httpOnly: true,
++      secure: process.env.NODE_ENV === "production",
++      sameSite: "strict",
++      path: "/",
++      maxAge: 10 * 60, // 10 minutes
++    })
++
++    return response
++
+   } catch (error: any) {
+     console.error("Verify OTP Reset Error:", error)
+-    return NextResponse.json(
+-      { error: "An unexpected error occurred" },
+-      { status: 500 }
+-    )
++    return respondError(req, 500, "An unexpected error occurred")
+   }
+ }
+diff --git a/apps/auth/src/app/api/auth/login/route.ts b/apps/auth/src/app/api/auth/login/route.ts
+index ab20e9f..db1fc1c 100644
+--- a/apps/auth/src/app/api/auth/login/route.ts
++++ b/apps/auth/src/app/api/auth/login/route.ts
+@@ -5,6 +5,7 @@ import { EmailService } from "~/lib/email-service"
+ import { enforceAuthRateLimits, loginLimiters } from "~/lib/rate-limit"
+ import { z } from "zod"
+ import { validateCsrf, rotateCsrfToken } from "~/lib/csrf"
++import { respondError } from "~/lib/security-response"
+ 
+ const loginSchema = z.object({
+   email: z.string().email().optional(),
+@@ -36,12 +37,10 @@ export async function POST(req: Request) {
+     const { email, phone, password } = result.data
+ 
+     // 2. Execute Tri-Layer Rate Limiting (IP + ID, Bounded Tarpit)
+-    const ip = req.headers.get("x-forwarded-for") ?? "127.0.0.1"
+-    
+     try {
+       await enforceAuthRateLimits({
+         limiters: loginLimiters,
+-        ip,
++        req,
+         identifier: email || phone,
+         namespace: "login"
+       });
+@@ -96,9 +95,6 @@ export async function POST(req: Request) {
+     }
+   } catch (error: any) {
+     console.error("Login Error:", error)
+-    return NextResponse.json(
+-      { error: "An unexpected error occurred" },
+-      { status: 500 }
+-    )
++    return respondError(req, 500, "An unexpected error occurred")
+   }
+ }
+diff --git a/apps/auth/src/app/api/auth/reset-password/complete/route.ts b/apps/auth/src/app/api/auth/reset-password/complete/route.ts
+index 3608615..94256ca 100644
+--- a/apps/auth/src/app/api/auth/reset-password/complete/route.ts
++++ b/apps/auth/src/app/api/auth/reset-password/complete/route.ts
+@@ -6,6 +6,10 @@ import { EmailService } from "~/lib/email-service"
+ import { enforceAuthRateLimits, otpVerifyLimiters } from "~/lib/rate-limit"
+ import { z } from "zod"
+ import { validateCsrf, rotateCsrfToken } from "~/lib/csrf"
++import { validatePasswordPolicy } from "~/lib/password-policy"
++import { respondError } from "~/lib/security-response"
++
++const RESET_COOKIE = "nodiox_reset_token"
+ 
+ const resetPasswordSchema = z.object({
+   code: z.string().optional(),
+@@ -33,13 +37,19 @@ export async function POST(req: Request) {
+ 
+     const { code, password } = result.data
+ 
++    const policy = validatePasswordPolicy(password)
++    if (!policy.ok) {
++      return NextResponse.json(
++        { error: "Password does not meet security requirements", code: policy.error },
++        { status: 400 }
++      )
++    }
++
+     // 2. Execute Rate Limiting (IP purely since email identifier isn't in payload yet)
+-    const ip = req.headers.get("x-forwarded-for") ?? "127.0.0.1"
+-    
+     try {
+       await enforceAuthRateLimits({
+         limiters: otpVerifyLimiters,
+-        ip,
++        req,
+         namespace: "reset_password"
+       });
+     } catch (e: any) {
+@@ -50,16 +60,20 @@ export async function POST(req: Request) {
+     const supabase = await createClient()
+     const admin = createAdminClient()
+     const cookieStore = await cookies()
++    const cookieToken = cookieStore.get(RESET_COOKIE)?.value
++    const effectiveCode = code ?? cookieToken
+     let isTokenValidated = false
+ 
+     // 4. SECURITY HANDSHAKE (Double-Lock)
+     // If a 'code' is provided, it could be a legacy Supabase link or our new secure resetToken.
+-    if (code) {
++    if (effectiveCode) {
+       // A. Check if it's our custom secure reset_token (OTP Flow)
++      const resetTokenHash = EmailService.hashResetTokenV1(effectiveCode)
+       const { data: tokenData } = await admin
+         .from("verification_codes")
+         .select("*")
+-        .match({ code, type: "reset_token" })
++        // Prefer modern hashed token lookup
++        .match({ type: "reset_token", code_hash: resetTokenHash })
+         .single()
+ 
+       if (tokenData) {
+@@ -72,9 +86,27 @@ export async function POST(req: Request) {
+         }
+       }
+ 
++      // Backward compatibility: legacy reset tokens stored in plaintext `code`
++      if (!isTokenValidated) {
++        const { data: legacyTokenData } = await admin
++          .from("verification_codes")
++          .select("*")
++          .match({ code: effectiveCode, type: "reset_token" })
++          .single()
++
++        if (legacyTokenData) {
++          if (new Date(legacyTokenData.expires_at) > new Date()) {
++            isTokenValidated = true
++          } else {
++            await admin.from("verification_codes").delete().eq("id", legacyTokenData.id)
++            return NextResponse.json({ error: "Your reset token has expired. Please try again." }, { status: 401 })
++          }
++        }
++      }
++
+       // B. If not our token, try Supabase's built-in code exchange (Link/Recovery Flow)
+       if (!isTokenValidated) {
+-        const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code)
++        const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(effectiveCode)
+         if (exchangeError) {
+           return NextResponse.json(
+             { error: "This secure link has expired or is invalid. Please request a new one." },
+@@ -108,8 +140,11 @@ export async function POST(req: Request) {
+     }
+ 
+     // 7. Cleanup the Reset Token if it was used
+-    if (isTokenValidated && code) {
+-      await admin.from("verification_codes").delete().match({ code, type: "reset_token" })
++    if (isTokenValidated && effectiveCode) {
++      const resetTokenHash = EmailService.hashResetTokenV1(effectiveCode)
++      // Delete both modern + legacy forms.
++      await admin.from("verification_codes").delete().match({ type: "reset_token", code_hash: resetTokenHash })
++      await admin.from("verification_codes").delete().match({ code: effectiveCode, type: "reset_token" })
+     }
+ 
+ 
+@@ -127,12 +162,11 @@ export async function POST(req: Request) {
+     // 8. CSRF Token Rotation on successful password change
+     await rotateCsrfToken()
+ 
+-    return NextResponse.json({ success: true })
++    const response = NextResponse.json({ success: true })
++    if (cookieToken) response.cookies.delete(RESET_COOKIE)
++    return response
+   } catch (error: any) {
+     console.error("Reset Password Session Error:", error)
+-    return NextResponse.json(
+-      { error: "An unexpected error occurred. Please try again." },
+-      { status: 500 }
+-    )
++    return respondError(req, 500, "An unexpected error occurred. Please try again.")
+   }
+ }
+diff --git a/apps/auth/src/app/api/auth/send-otp/route.ts b/apps/auth/src/app/api/auth/send-otp/route.ts
+index 27cacc7..87e21e4 100644
+--- a/apps/auth/src/app/api/auth/send-otp/route.ts
++++ b/apps/auth/src/app/api/auth/send-otp/route.ts
+@@ -5,6 +5,7 @@ import { createAdminClient } from "~/lib/supabase/admin"
+ import { enforceAuthRateLimits, otpSendLimiters, otpSendCooldownLimit } from "~/lib/rate-limit"
+ import { z } from "zod"
+ import { validateCsrf } from "~/lib/csrf"
++import { respondError } from "~/lib/security-response"
+ 
+ const sendOtpSchema = z.object({
+   email: z.string().email().optional(),
+@@ -35,12 +36,10 @@ export async function POST(req: Request) {
+     const { email, phone } = result.data
+ 
+     // 2. Execute Tri-Layer Rate Limiting (IP + ID, Bounded Tarpit)
+-    const ip = req.headers.get("x-forwarded-for") ?? "127.0.0.1"
+-    
+     try {
+       await enforceAuthRateLimits({
+         limiters: [...otpSendLimiters, otpSendCooldownLimit], // Enforces 1 per 60s minimum gap + sustained
+-        ip,
++        req,
+         identifier: email || phone,
+         namespace: "otp_send"
+       });
+@@ -82,9 +81,6 @@ export async function POST(req: Request) {
+     }
+   } catch (error: any) {
+     console.error("OTP Error:", error)
+-    return NextResponse.json(
+-      { error: "An unexpected error occurred" },
+-      { status: 500 }
+-    )
++    return respondError(req, 500, "An unexpected error occurred")
+   }
+ }
+diff --git a/apps/auth/src/app/api/auth/set-password/route.ts b/apps/auth/src/app/api/auth/set-password/route.ts
+index a5a8c80..3d3b35f 100644
+--- a/apps/auth/src/app/api/auth/set-password/route.ts
++++ b/apps/auth/src/app/api/auth/set-password/route.ts
+@@ -5,6 +5,9 @@ import { createAdminClient } from "~/lib/supabase/admin"
+ import { EmailService } from "~/lib/email-service"
+ import { z } from "zod"
+ import { validateCsrf, rotateCsrfToken } from "~/lib/csrf"
++import { validatePasswordPolicy } from "~/lib/password-policy"
++import { redisClient, hashIdentifier } from "~/lib/rate-limit"
++import { respondError } from "~/lib/security-response"
+ 
+ const setPasswordSchema = z.object({
+   password: z.string().min(8),
+@@ -32,9 +35,23 @@ export async function POST(req: Request) {
+ 
+     const { password, fullName, phone } = result.data
+ 
+-    // 1. Check for the Secure Signup Verification Cookie
++    const policy = validatePasswordPolicy(password)
++    if (!policy.ok) {
++      return NextResponse.json(
++        { error: "Password does not meet security requirements", code: policy.error },
++        { status: 400 }
++      )
++    }
++
++    // 1. Check for the Secure Signup Verification Cookie (opaque token)
+     const cookieStore = await cookies()
+-    const verifiedEmail = cookieStore.get("nodiox_signup_email")?.value
++    const signupToken = cookieStore.get("nodiox_signup_token")?.value
++
++    const signupTokenHash = signupToken ? hashIdentifier("signup_token", signupToken) : null
++    const verifiedEmail =
++      signupTokenHash
++        ? await redisClient.get<string>(`@nodiox/signup_token:${signupTokenHash}`)
++        : null
+ 
+     if (!verifiedEmail) {
+       return NextResponse.json(
+@@ -68,9 +85,12 @@ export async function POST(req: Request) {
+       )
+     }
+ 
+-    // 3. Clear the signup verification cookie
++    // 3. Clear the signup verification cookie + redis token
+     const response = NextResponse.json({ success: true, user: userData.user })
+-    response.cookies.delete("nodiox_signup_email")
++    response.cookies.delete("nodiox_signup_token")
++    if (signupTokenHash) {
++      await redisClient.del(`@nodiox/signup_token:${signupTokenHash}`)
++    }
+ 
+     // 4. Send Welcome Email
+     const locale = cookieStore.get("NEXT_LOCALE")?.value || "en"
+@@ -98,9 +118,6 @@ export async function POST(req: Request) {
+     return response
+   } catch (error: any) {
+     console.error("Set Password Error:", error)
+-    return NextResponse.json(
+-      { error: "An unexpected error occurred" },
+-      { status: 500 }
+-    )
++    return respondError(req, 500, "An unexpected error occurred")
+   }
+ }
+diff --git a/apps/auth/src/app/api/auth/verify-otp/route.ts b/apps/auth/src/app/api/auth/verify-otp/route.ts
+index a3cea51..d52446f 100644
+--- a/apps/auth/src/app/api/auth/verify-otp/route.ts
++++ b/apps/auth/src/app/api/auth/verify-otp/route.ts
+@@ -6,6 +6,8 @@ import { enforceAuthRateLimits, otpVerifyLimiters } from "~/lib/rate-limit"
+ import { z } from "zod"
+ import type { EmailOtpType, MobileOtpType } from "@supabase/supabase-js"
+ import { validateCsrf, rotateCsrfToken } from "~/lib/csrf"
++import { redisClient, hashIdentifier } from "~/lib/rate-limit"
++import { respondError } from "~/lib/security-response"
+ 
+ const verifyOtpSchema = z.object({
+   email: z.string().email().optional(),
+@@ -38,12 +40,10 @@ export async function POST(req: Request) {
+     const { email, phone, token, type } = result.data
+ 
+     // 2. Execute Tri-Layer Rate Limiting (IP + ID, Bounded Tarpit)
+-    const ip = req.headers.get("x-forwarded-for") ?? "127.0.0.1"
+-    
+     try {
+       await enforceAuthRateLimits({
+         limiters: otpVerifyLimiters,
+-        ip,
++        req,
+         identifier: email || phone,
+         namespace: "otp_verify"
+       });
+@@ -73,9 +73,13 @@ export async function POST(req: Request) {
+       if (type === "signup") {
+         // For signup, we don't have a user yet. We set a secure cookie to authorize the 'set-password' step.
+         const response = NextResponse.json({ success: true, message: "Email verified. Please set your password." })
+-        
+-        // Set a short-lived (15 min) secure cookie with the verified email
+-        response.cookies.set("nodiox_signup_email", email, {
++
++        // Use an opaque, short-lived token (no PII in cookie). Email is stored server-side in Redis for 15m.
++        const signupToken = crypto.randomUUID()
++        const signupTokenHash = hashIdentifier("signup_token", signupToken)
++        await redisClient.set(`@nodiox/signup_token:${signupTokenHash}`, email, { ex: 60 * 15 })
++
++        response.cookies.set("nodiox_signup_token", signupToken, {
+           httpOnly: true,
+           secure: process.env.NODE_ENV === "production",
+           sameSite: "lax",
+@@ -149,9 +153,6 @@ export async function POST(req: Request) {
+     return response
+   } catch (error: any) {
+     console.error("Verify OTP Error:", error)
+-    return NextResponse.json(
+-      { error: "An unexpected error occurred" },
+-      { status: 500 }
+-    )
++    return respondError(req, 500, "An unexpected error occurred")
+   }
+ }
+diff --git a/apps/auth/src/components/forgot-password/forgot-password-wrapper.tsx b/apps/auth/src/components/forgot-password/forgot-password-wrapper.tsx
+index cba0d98..417ef41 100644
+--- a/apps/auth/src/components/forgot-password/forgot-password-wrapper.tsx
++++ b/apps/auth/src/components/forgot-password/forgot-password-wrapper.tsx
+@@ -9,7 +9,7 @@ import { AnimatePresence } from "framer-motion"
+ import { useTranslations } from "next-intl"
+ 
+ import { createForgotPasswordSchema, type ForgotPasswordData } from "~/lib/forgot-password-schema"
+-import { useRouter } from "next/navigation"
++import { useRouter } from "@nodiox/i18n"
+ import { Step1Email } from "./step1-email"
+ import { Step2Mfa } from "./step2-mfa"
+ 
+@@ -46,8 +46,8 @@ export function ForgotPasswordWrapper({
+             <Step2Mfa 
+               key="step2"
+               onBack={() => setStep(1)}
+-              onSuccess={(token) => {
+-                router.push(`/password-reset?token=${token}`)
++              onSuccess={() => {
++                router.push("/password-reset")
+               }}
+             />
+           )}
+diff --git a/apps/auth/src/components/forgot-password/step2-mfa.tsx b/apps/auth/src/components/forgot-password/step2-mfa.tsx
+index e3547c9..a40c26b 100644
+--- a/apps/auth/src/components/forgot-password/step2-mfa.tsx
++++ b/apps/auth/src/components/forgot-password/step2-mfa.tsx
+@@ -17,7 +17,7 @@ import { apiFetch } from "~/lib/api-client"
+ 
+ interface Step2MfaProps {
+   onBack: () => void
+-  onSuccess: (token: string) => void
++  onSuccess: () => void
+ }
+ 
+ export function Step2Mfa({ onBack, onSuccess }: Step2MfaProps) {
+@@ -70,7 +70,7 @@ export function Step2Mfa({ onBack, onSuccess }: Step2MfaProps) {
+       })
+       const data = await res.json()
+       if (!res.ok) throw new Error(data.error || "Invalid verification code")
+-      onSuccess(data.resetToken)
++      onSuccess()
+     } catch (err: any) {
+       setOtpError?.(err.message)
+     } finally {
+diff --git a/apps/auth/src/components/forgot-password/step3-new-password.tsx b/apps/auth/src/components/forgot-password/step3-new-password.tsx
+index 2948680..2ee6ad1 100644
+--- a/apps/auth/src/components/forgot-password/step3-new-password.tsx
++++ b/apps/auth/src/components/forgot-password/step3-new-password.tsx
+@@ -78,7 +78,7 @@ export function Step3NewPassword({ onBack, otp }: Step3NewPasswordProps) {
+       const res = await apiFetch("/api/auth/reset-password/complete", {
+         method: "POST",
+         body: JSON.stringify({
+-          code: otp === "session" ? undefined : otp,
++          code: otp === "session" || otp === "cookie" ? undefined : otp,
+           password: password,
+         }),
+       })
+diff --git a/apps/auth/src/components/password-reset-form.tsx b/apps/auth/src/components/password-reset-form.tsx
+index c31d5fc..560b1d8 100644
+--- a/apps/auth/src/components/password-reset-form.tsx
++++ b/apps/auth/src/components/password-reset-form.tsx
+@@ -27,7 +27,7 @@ export function PasswordResetForm({ code, token }: PasswordResetFormProps) {
+     <div className="w-full">
+       <FormProvider {...methods}>
+         <Step3NewPassword 
+-          otp={token || code || "session"} 
++          otp={token || code || "cookie"} 
+           onBack={() => {
+             router.push("/login")
+           }} 
+diff --git a/apps/auth/src/components/providers/csrf-provider.tsx b/apps/auth/src/components/providers/csrf-provider.tsx
+deleted file mode 100644
+index 4832dcb..0000000
+--- a/apps/auth/src/components/providers/csrf-provider.tsx
++++ /dev/null
+@@ -1,36 +0,0 @@
+-"use client"
+-
+-import React, { createContext, useContext, useEffect, useState } from "react"
+-
+-interface CsrfContextType {
+-  csrfToken: string | null
+-}
+-
+-export let globalCsrfToken: string | null = null
+-
+-export function updateGlobalCsrfToken(token: string) {
+-  globalCsrfToken = token;
+-}
+-
+-const CsrfContext = createContext<CsrfContextType>({ csrfToken: null })
+-
+-export function CsrfProvider({ children, token }: { children: React.ReactNode; token: string | null }) {
+-
+-  if (token && globalCsrfToken !== token) {
+-    globalCsrfToken = token
+-  }
+-
+-  return (
+-    <CsrfContext.Provider value={{ csrfToken: token }}>
+-      {children}
+-    </CsrfContext.Provider>
+-  )
+-}
+-
+-export function useCsrfToken() {
+-  const context = useContext(CsrfContext)
+-  if (!context) {
+-    throw new Error("useCsrfToken must be used within a CsrfProvider")
+-  }
+-  return context.csrfToken
+-}
+diff --git a/apps/auth/src/lib/api-client.ts b/apps/auth/src/lib/api-client.ts
+index 610fa5f..89fb6bc 100644
+--- a/apps/auth/src/lib/api-client.ts
++++ b/apps/auth/src/lib/api-client.ts
+@@ -1,5 +1,3 @@
+-import { globalCsrfToken, updateGlobalCsrfToken } from "~/components/providers/csrf-provider"
+-
+ /**
+  * A wrapper around native fetch that automatically injects
+  * the required CSRF headers and Content-Type for API Route handlers.
+@@ -12,9 +10,13 @@ export async function apiFetch(url: string, options: RequestInit = {}) {
+     headers.set("Content-Type", "application/json")
+   }
+ 
+-  // Inject current CSRF token securely
+-  if (globalCsrfToken) {
+-    headers.set("x-csrf-token", globalCsrfToken)
++  // Option C (Double Submit): read CSRF token from non-HttpOnly cookie
++  // and echo it in a header for state-changing requests.
++  const method = (options.method ?? "GET").toUpperCase()
++  const safeMethods = new Set(["GET", "HEAD", "OPTIONS"])
++  if (!safeMethods.has(method)) {
++    const csrfToken = readCookie("nodiox_csrf_token")
++    if (csrfToken) headers.set("x-csrf-token", csrfToken)
+   }
+ 
+   const response = await fetch(url, {
+@@ -22,11 +24,15 @@ export async function apiFetch(url: string, options: RequestInit = {}) {
+     headers,
+   })
+ 
+-  // If the server rotated the CSRF token, it will send the new one in the response header
+-  const rotatedToken = response.headers.get("x-csrf-token")
+-  if (rotatedToken) {
+-    updateGlobalCsrfToken(rotatedToken)
+-  }
+-
+   return response
+ }
++
++function readCookie(name: string): string | null {
++  if (typeof document === "undefined") return null
++  const match = document.cookie.match(new RegExp(`(?:^|; )${escapeRegex(name)}=([^;]*)`))
++  return match ? decodeURIComponent(match[1]) : null
++}
++
++function escapeRegex(s: string) {
++  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
++}
+diff --git a/apps/auth/src/lib/csrf.ts b/apps/auth/src/lib/csrf.ts
+index 3b52ecb..15d0f0d 100644
+--- a/apps/auth/src/lib/csrf.ts
++++ b/apps/auth/src/lib/csrf.ts
+@@ -1,7 +1,7 @@
+-import { NextResponse } from "next/server"
+ import { cookies } from "next/headers"
+-import { timingSafeEqual } from "crypto"
++import { randomUUID, timingSafeEqual } from "crypto"
+ import { securityRateLimit } from "./rate-limit"
++import { getCorrelationId, securityLog } from "./security-log"
+ 
+ /**
+  * Validates the CSRF token from the request header against the 
+@@ -9,18 +9,18 @@ import { securityRateLimit } from "./rate-limit"
+  * Strictly enforces Content-Type, Origin matching, and logs failures.
+  */
+ export async function validateCsrf(req: Request): Promise<{ success: boolean; error?: string }> {
+-  const ip = req.headers.get("x-forwarded-for") ?? "127.0.0.1"
++  const ip = (req.headers.get("x-forwarded-for")?.split(",")[0] ?? "127.0.0.1").trim()
++  const correlationId = getCorrelationId(req)
+ 
+   // Helper for structured logging of failures + abuse signal tracking
+   const fail = async (reason: string, message: string) => {
+-    // Audit log
+-    console.warn(JSON.stringify({
+-      event: "csrf_validation_failed",
++    securityLog("warn", "csrf_validation_failed", {
++      correlationId,
+       ip,
+       origin: req.headers.get("origin") ?? "missing",
+       path: req.url,
+-      reason
+-    }))
++      reason,
++    })
+ 
+     // Rate Limit CSRF Failures (Abuse Signal)
+     // If same IP triggers many failures, we throttle them here
+@@ -35,7 +35,7 @@ export async function validateCsrf(req: Request): Promise<{ success: boolean; er
+   }
+ 
+   // 1.1 Lock Methods: CSRF is only applicable for state-changing endpoints
+-  const safeMethods = ["GET", "HEAD", "TRACE"]
++  const safeMethods = ["GET", "HEAD"]
+   if (safeMethods.includes(req.method)) {
+     return { success: true }
+   }
+@@ -56,13 +56,21 @@ export async function validateCsrf(req: Request): Promise<{ success: boolean; er
+ 
+   // 3. Enforce Content-Type Strictly
+   const contentType = req.headers.get("content-type")
+-  if (!contentType?.includes("application/json")) {
++  // Allow standard JSON + vendor JSON, but don't hard-fail for form/multipart unless you
++  // intentionally require JSON-only on this route.
++  if (contentType && !/application\/json|application\/.+\+json/i.test(contentType)) {
++    // If a Content-Type is present and isn't JSON-ish, reject.
++    // (If you later add multipart/form-data endpoints, revisit this.)
+     return await fail("invalid_content_type", "Invalid Content-Type. Expected application/json")
+   }
+ 
+   // 4. Strict Origin/Host Matching + Protocol Check
+   const origin = req.headers.get("origin")
+-  const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host")
++  // Avoid trusting spoofable forwarded headers for security decisions.
++  // Use the actual request URL host as the authority.
++  const requestUrl = new URL(req.url)
++  const host = requestUrl.host
++  const forwardedProto = req.headers.get("x-forwarded-proto")
+   
+   if (!origin) {
+     return await fail("missing_origin", "Missing Origin header")
+@@ -71,10 +79,14 @@ export async function validateCsrf(req: Request): Promise<{ success: boolean; er
+   if (origin && host) {
+     try {
+       const originUrl = new URL(origin)
+-      const expectedOrigin = `${originUrl.protocol}//${host}`
++      const isProd = process.env.NODE_ENV === "production"
++      const expectedProto =
++        forwardedProto ??
++        (isProd ? "https" : requestUrl.protocol.replace(":", ""))
++      const expectedOrigin = `${expectedProto}://${host}`
+ 
+       // Compare exact expected origin string to catch protocol downgrades
+-      if (originUrl.origin !== expectedOrigin && originUrl.host !== host) {
++      if (originUrl.origin !== expectedOrigin || originUrl.host !== host) {
+         return await fail("origin_mismatch", "Cross-Origin requests are forbidden")
+       }
+     } catch {
+@@ -106,10 +118,11 @@ export async function validateCsrf(req: Request): Promise<{ success: boolean; er
+  */
+ export async function rotateCsrfToken() {
+   const cookieStore = await cookies()
+-  const token = crypto.randomUUID()
++  const token = randomUUID()
+   
+   cookieStore.set("nodiox_csrf_token", token, {
+-    httpOnly: true,
++    // Option C (Double Submit): must be readable by JS to echo in X-CSRF-Token.
++    httpOnly: false,
+     secure: process.env.NODE_ENV === "production",
+     sameSite: "strict",
+     path: "/",
+diff --git a/apps/auth/src/lib/email-service.ts b/apps/auth/src/lib/email-service.ts
+index e442c52..b63f908 100644
+--- a/apps/auth/src/lib/email-service.ts
++++ b/apps/auth/src/lib/email-service.ts
+@@ -1,8 +1,10 @@
+ import { Resend } from "resend"
+ import { createAdminClient } from "./supabase/admin"
+ import crypto from "crypto"
++import { timingSafeEqual } from "crypto"
+ import { getTranslations } from "next-intl/server"
+ import { redisClient, hashIdentifier } from "./rate-limit"
++import { securityLog } from "./security-log"
+ 
+ const resend = new Resend(process.env.RESEND_API_KEY)
+ 
+@@ -82,6 +84,31 @@ function applyLayout(title: string, content: string, locale: string, disclaimer:
+ }
+ 
+ export const EmailService = {
++  _otpPepper() {
++    const pepper = process.env.OTP_PEPPER
++    if (process.env.NODE_ENV === "production" && (!pepper || pepper.length < 16)) {
++      throw new Error("Missing/weak OTP_PEPPER in production")
++    }
++    // Dev fallback to keep local environments functional.
++    return pepper ?? "dev-otp-pepper-change-me"
++  },
++
++  _hashOtpV1(code: string, saltB64: string) {
++    const pepper = EmailService._otpPepper()
++    return crypto
++      .createHmac("sha256", pepper)
++      .update(`v1:${saltB64}:${code}`)
++      .digest("base64url")
++  },
++
++  hashResetTokenV1(token: string) {
++    const pepper = EmailService._otpPepper()
++    return crypto
++      .createHmac("sha256", pepper)
++      .update(`reset_v1:${token}`)
++      .digest("base64url")
++  },
++
+   /**
+    * Generates, stores, and sends a 6-digit OTP via Resend.
+    */
+@@ -92,6 +119,9 @@ export const EmailService = {
+       
+       // 1. Generate 6-digit code
+       const code = crypto.randomInt(100000, 999999).toString()
++      const saltB64 = crypto.randomBytes(16).toString("base64url")
++      const codeHash = EmailService._hashOtpV1(code, saltB64)
++      const storedCode = `v1.${saltB64}.${codeHash}`
+       
+       // 2. Set expiry (10 minutes)
+       const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString()
+@@ -111,7 +141,11 @@ export const EmailService = {
+         .from("verification_codes")
+         .insert({
+           email,
+-          code,
++          // Store only a salted+peppered hash (no plaintext OTP at rest).
++          code: storedCode,
++          code_hash: codeHash,
++          code_salt: saltB64,
++          code_version: "otp_hmac_sha256_v1",
+           type,
+           expires_at: expiresAt,
+         })
+@@ -165,7 +199,7 @@ export const EmailService = {
+     const supabase = createAdminClient()
+     
+     // Evaluate Upstash Redis Hard-Lock attempts
+-    const attemptsKey = `@nodiox/otp_attempts:${hashIdentifier('email', email)}`
++    const attemptsKey = `@nodiox/otp_attempts:${hashIdentifier('email', `${email}:${type}`)}`
+     const attempts = await redisClient.incr(attemptsKey)
+     
+     // Set expiry for 15 minutes roughly tracking the OTP lifespan if first attempt
+@@ -176,20 +210,86 @@ export const EmailService = {
+     if (attempts >= 5) {
+       // Invalidate the code entirely due to brute-force
+       await supabase.from("verification_codes").delete().match({ email, type })
+-      return { success: false, error: "Too many failed attempts. Code invalidated." }
++      securityLog("warn", "otp_verification_failed", {
++        channel: "email",
++        type,
++        emailHash: hashIdentifier("email", email),
++        reason: "too_many_attempts",
++      })
++      return { success: false, error: "Invalid or expired verification code" }
+     }
+ 
+     const { data, error: dbError } = await supabase
+       .from("verification_codes")
+       .select("*")
+-      .match({ email, code, type })
++      .match({ email, type })
+       .single()
+ 
+-    if (dbError || !data) return { success: false, error: "Invalid or expired verification code" }
++    if (dbError || !data) {
++      securityLog("warn", "otp_verification_failed", {
++        channel: "email",
++        type,
++        emailHash: hashIdentifier("email", email),
++        reason: "missing_code_record",
++      })
++      return { success: false, error: "Invalid or expired verification code" }
++    }
+ 
+     if (new Date(data.expires_at) < new Date()) {
+       await supabase.from("verification_codes").delete().eq("id", data.id)
+-      return { success: false, error: "Verification code has expired" }
++      securityLog("warn", "otp_verification_failed", {
++        channel: "email",
++        type,
++        emailHash: hashIdentifier("email", email),
++        reason: "expired",
++      })
++      return { success: false, error: "Invalid or expired verification code" }
++    }
++
++    // Strict format validation (6 digits). Keep response generic.
++    if (!/^\d{6}$/.test(code)) {
++      securityLog("warn", "otp_verification_failed", {
++        channel: "email",
++        type,
++        emailHash: hashIdentifier("email", email),
++        reason: "invalid_format",
++      })
++      return { success: false, error: "Invalid or expired verification code" }
++    }
++
++    // Constant-time verification against stored salted+peppered hash.
++    const storedSalt: string | null = data.code_salt ?? null
++    const storedHash: string | null = data.code_hash ?? null
++    const storedVersion: string | null = data.code_version ?? null
++
++    let saltB64 = "invalid"
++    let hashB64 = "invalid"
++    let expectedHash = "invalid"
++
++    if (storedVersion === "otp_hmac_sha256_v1" && storedSalt && storedHash) {
++      saltB64 = storedSalt
++      hashB64 = storedHash
++      expectedHash = EmailService._hashOtpV1(code, saltB64)
++    } else {
++      // Backward compatible path: parse v1.<salt>.<hash> stored in `code`
++      const legacy: string = data.code ?? ""
++      const parts = legacy.split(".")
++      saltB64 = parts.length === 3 && parts[0] === "v1" ? parts[1] : "invalid"
++      hashB64 = parts.length === 3 && parts[0] === "v1" ? parts[2] : "invalid"
++      expectedHash = EmailService._hashOtpV1(code, saltB64)
++    }
++
++    const a = Buffer.from(hashB64)
++    const b = Buffer.from(expectedHash)
++    const hashesMatch = a.length === b.length && timingSafeEqual(a, b)
++    if (!hashesMatch) {
++      securityLog("warn", "otp_verification_failed", {
++        channel: "email",
++        type,
++        emailHash: hashIdentifier("email", email),
++        reason: "hash_mismatch",
++      })
++      return { success: false, error: "Invalid or expired verification code" }
+     }
+ 
+     // Success! Delete the code so it cannot be used again
+diff --git a/apps/auth/src/lib/rate-limit.ts b/apps/auth/src/lib/rate-limit.ts
+index 63c1daa..fd36edb 100644
+--- a/apps/auth/src/lib/rate-limit.ts
++++ b/apps/auth/src/lib/rate-limit.ts
+@@ -1,6 +1,7 @@
+ import { Ratelimit } from "@upstash/ratelimit"
+ import { Redis } from "@upstash/redis"
+ import crypto from "crypto"
++import { getCorrelationId, securityLog } from "./security-log"
+ 
+ // Reuse a single redis instance
+ export const redisClient = Redis.fromEnv()
+@@ -92,6 +93,34 @@ export function hashIdentifier(namespace: string, id: string): string {
+   return crypto.createHash("sha256").update(`${namespace}:${id}`).digest("hex")
+ }
+ 
++export function getClientIp(req: Request): string {
++  // Vercel is the trusted proxy in production.
++  // Only trust forwarded headers when we can detect a Vercel hop.
++  const isProd = process.env.NODE_ENV === "production"
++  const vercelId = req.headers.get("x-vercel-id")
++
++  const xff = req.headers.get("x-forwarded-for")
++  const xrip = req.headers.get("x-real-ip")
++
++  const forwardedIp = (xff?.split(",")[0] ?? xrip ?? "").trim()
++  const raw = isProd
++    ? (vercelId ? forwardedIp : "")
++    : (forwardedIp || "127.0.0.1")
++
++  if (!raw) return "127.0.0.1"
++
++  // Strip IPv6 brackets and any port suffix.
++  const noBrackets = raw.replace(/^\[/, "").replace(/\]$/, "")
++  return noBrackets.replace(/:\d+$/, "")
++}
++
++export function getTenantScope(req: Request): string {
++  // For multi-tenant SaaS, scope rate limits by the request host so tenants
++  // on different subdomains/custom domains don't share buckets.
++  const host = new URL(req.url).host.toLowerCase()
++  return hashIdentifier("tenant", host)
++}
++
+ // Bounded Delay Tarpit (Max 1s delay)
+ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+ 
+@@ -102,22 +131,38 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+  */
+ export async function enforceAuthRateLimits(options: {
+   limiters: Ratelimit[],
+-  ip: string,
++  req?: Request,
++  ip?: string,
+   identifier?: string,
+-  namespace: string
++  namespace: string,
++  tenantScope?: string,
+ }) {
+-  const { limiters, ip, identifier, namespace } = options
++  const { limiters, req, identifier, namespace } = options
++  const ip = options.ip ?? (req ? getClientIp(req) : "127.0.0.1")
++  const tenantScope = options.tenantScope ?? (req ? getTenantScope(req) : "public")
++  const correlationId = req ? getCorrelationId(req) : undefined
+ 
+   // 1. Global IP Check (Instant rejection if flooding)
+   const { success: globalOk } = await globalRateLimit.limit(ip)
+-  if (!globalOk) throw new Error("Too many attempts. Please try again later.")
++  if (!globalOk) {
++    if (req) {
++      securityLog("warn", "rate_limit_blocked", {
++        correlationId,
++        namespace,
++        tenantScope,
++        ip,
++        layer: "global_ip",
++      })
++    }
++    throw new Error("Too many attempts. Please try again later.")
++  }
+ 
+   // 2. Build tracking keys
+   let normalizedId = ""
+   let hashedId = ""
+   if (identifier) {
+     normalizedId = normalizeIdentifier(identifier)
+-    hashedId = hashIdentifier(namespace, normalizedId)
++    hashedId = hashIdentifier(namespace, `${tenantScope}:${normalizedId}`)
+   }
+ 
+   // 3. Prepare Parallel Execution Tasks
+@@ -125,14 +170,14 @@ export async function enforceAuthRateLimits(options: {
+   
+   for (const limiter of limiters) {
+     // Add Layer 1: IP
+-    limitTasks.push(limiter.limit(ip))
++    limitTasks.push(limiter.limit(`t:${tenantScope}:ip:${ip}`))
+     
+     // Add Layer 2 & 3 if identifier exists
+     if (hashedId) {
+       // Layer 2: ID
+-      limitTasks.push(limiter.limit(`id:${hashedId}`))
++      limitTasks.push(limiter.limit(`t:${tenantScope}:id:${hashedId}`))
+       // Layer 3: Composite IP+ID
+-      limitTasks.push(limiter.limit(`composite:${ip}:${hashedId}`))
++      limitTasks.push(limiter.limit(`t:${tenantScope}:composite:${ip}:${hashedId}`))
+     }
+   }
+ 
+@@ -143,6 +188,15 @@ export async function enforceAuthRateLimits(options: {
+   let lowestRemaining = 1000;
+   for (const result of results) {
+     if (!result.success) {
++      if (req) {
++        securityLog("warn", "rate_limit_blocked", {
++          correlationId,
++          namespace,
++          tenantScope,
++          ip,
++          layer: "auth_tri_layer",
++        })
++      }
+       throw new Error("Too many attempts. Please try again later.")
+     }
+     if (result.remaining < lowestRemaining) {
+diff --git a/apps/auth/src/proxy.ts b/apps/auth/src/proxy.ts
+index 663ea0a..0b59e80 100644
+--- a/apps/auth/src/proxy.ts
++++ b/apps/auth/src/proxy.ts
+@@ -1,26 +1,28 @@
+-import { routing } from '@nodiox/i18n';
+-import createMiddleware from 'next-intl/middleware';
+-import { NextResponse, type NextRequest } from 'next/server';
++import { routing } from "@nodiox/i18n"
++import createMiddleware from "next-intl/middleware"
++import { NextResponse, type NextRequest } from "next/server"
+ 
+-const intlMiddleware = createMiddleware(routing);
++const intlMiddleware = createMiddleware(routing)
+ 
+ export async function middleware(request: NextRequest) {
+-  const { pathname } = request.nextUrl;
++  const { pathname } = request.nextUrl
+ 
+   // Root redirect to your default page (login or dashboard)
+-  if (pathname === '/' || pathname === '') {
+-    return NextResponse.redirect(new URL('/login', request.url));
++  if (pathname === "/" || pathname === "") {
++    return NextResponse.redirect(new URL(`/${routing.defaultLocale}/login`, request.url))
+   }
+ 
+   // 1. Generate a cryptographic nonce for this request (CSP)
+-  const nonce = Buffer.from(crypto.randomUUID()).toString('base64');
+-  const isDev = process.env.NODE_ENV === 'development';
++  const nonce = Buffer.from(crypto.randomUUID()).toString("base64")
++  const isDev = process.env.NODE_ENV === "development"
+ 
+   // 2. Build the Content-Security-Policy header
+   const cspHeader = `
+     default-src 'self';
+-    script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${isDev ? " 'unsafe-eval'" : ''};
++    script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${isDev ? " 'unsafe-eval'" : ""};
++    script-src-attr 'none';
+     style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
++    style-src-attr 'none';
+     img-src 'self' blob: data: https://fonts.gstatic.com;
+     font-src 'self' https://fonts.gstatic.com;
+     connect-src 'self' https://*.supabase.co;
+@@ -28,66 +30,67 @@ export async function middleware(request: NextRequest) {
+     base-uri 'self';
+     form-action 'self';
+     frame-ancestors 'none';
+-    ${!isDev ? 'upgrade-insecure-requests;' : ''}
++    frame-src 'none';
++    ${!isDev ? "upgrade-insecure-requests;" : ""}
+     report-uri /api/security/csp-report;
+     report-to csp-endpoint;
+-  `.replace(/\s{2,}/g, ' ').trim();
++  `
++    .replace(/\s{2,}/g, " ")
++    .trim()
+ 
+-  // 3. Forward the nonce to server components via request headers
+-  const requestHeaders = new Headers(request.headers);
+-  requestHeaders.set('x-nonce', nonce);
+-  requestHeaders.set('Content-Security-Policy', cspHeader);
+-
+-  // 4. Process standard routing/i18n middleware
+-  //    We create the response with the modified request headers so
+-  //    downstream server components can read the nonce via headers()
+-  const response = intlMiddleware(request);
++  // 3. Process standard routing/i18n middleware
++  const response = intlMiddleware(request)
+ 
+   // 5. Set the CSP + nonce on the actual response sent to the browser
+-  response.headers.set('Content-Security-Policy', cspHeader);
+-  response.headers.set('x-nonce', nonce);
++  response.headers.set("Content-Security-Policy", cspHeader)
++  response.headers.set("x-nonce", nonce)
++
++  // 5.0 Make the nonce visible to downstream Server Components via
++  // Next.js middleware request header overrides.
++  response.headers.set("x-middleware-override-headers", "x-nonce")
++  response.headers.set("x-middleware-request-x-nonce", nonce)
+ 
+   // 5.1 Set the Report-To header dynamically resolving the absolute origin
+-  const origin = `${request.nextUrl.protocol}//${request.nextUrl.host}`;
++  const origin = `${request.nextUrl.protocol}//${request.nextUrl.host}`
++  const cspReportUrl = `${origin}/api/security/csp-report`
+   response.headers.set(
+     "Report-To",
+     JSON.stringify({
+       group: "csp-endpoint",
+       max_age: 10886400,
+-      endpoints: [{ url: `${origin}/api/security/csp-report` }],
++      endpoints: [{ url: cspReportUrl }],
+     })
+-  );
++  )
+ 
+-  // 6. Forward all request headers so Next.js server components
+-  //    can read them via the headers() API
+-  requestHeaders.forEach((value, key) => {
+-    response.headers.set(`x-middleware-request-${key}`, value);
+-  });
++  // Modern Reporting API (preferred by newer browsers)
++  response.headers.set("Reporting-Endpoints", `csp-endpoint="${cspReportUrl}"`)
+ 
+-  // 7. Inject CSRF Token on first boot if missing
++  // 6. Inject CSRF Token on first boot if missing
+   if (!request.cookies.has("nodiox_csrf_token")) {
+-    const token = crypto.randomUUID();
++    const token = crypto.randomUUID()
+     response.cookies.set("nodiox_csrf_token", token, {
+-      httpOnly: true,
++      // Option C (Double Submit): must be readable by JS to echo in X-CSRF-Token.
++      httpOnly: false,
+       secure: process.env.NODE_ENV === "production",
+       sameSite: "strict",
+       path: "/",
+-    });
++    })
+   }
+ 
+-  return response;
++  return response
+ }
+ 
+-export default middleware;
++export default middleware
+ 
+ export const config = {
+   matcher: [
+     {
+-      source: '/((?!api|_next/static|_next/image|favicon.ico).*)',
++      source: "/((?!api|_next/static|_next/image|favicon.ico).*)",
+       missing: [
+-        { type: 'header', key: 'next-router-prefetch' },
+-        { type: 'header', key: 'purpose', value: 'prefetch' },
++        { type: "header", key: "next-router-prefetch" },
++        { type: "header", key: "purpose", value: "prefetch" },
+       ],
+     },
+   ],
+-};
++}
++
+diff --git a/packages/i18n/src/routing.ts b/packages/i18n/src/routing.ts
+index f9e7e6f..2152dca 100644
+--- a/packages/i18n/src/routing.ts
++++ b/packages/i18n/src/routing.ts
+@@ -7,7 +7,9 @@ import {createNavigation} from 'next-intl/navigation';
+ export const routing = defineRouting({
+   locales,
+   defaultLocale,
+-  localePrefix: 'as-needed'
++  // This repo routes as /[locale]/..., so the locale must always be present
++  // to avoid treating /forgot-password as locale="forgot-password".
++  localePrefix: 'always'
+ });
+ 
+ export const {Link, redirect, usePathname, useRouter, getPathname} =

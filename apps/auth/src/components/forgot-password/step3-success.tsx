@@ -7,7 +7,7 @@ import { motion } from "framer-motion"
 import { ShimmerButton } from "@nodiox/ui"
 import { useRouter } from "@nodiox/i18n"
 import { useFormContext } from "react-hook-form"
-import type { ForgotPasswordData } from "~/lib/forgot-password-schema"
+import type { ForgotPasswordData } from "~/lib/password-schemas"
 
 export function Step3Success() {
   const t = useTranslations("ForgotPassword")
@@ -25,7 +25,7 @@ export function Step3Success() {
     >
       <div className="relative mb-2 flex h-12 w-12 items-center justify-center">
         <Image
-          src="https://fonts.gstatic.com/s/e/notoemoji/latest/1f4e7/512.gif"
+          src="https://fonts.gstatic.com/s/e/notoemoji/latest/1f4e7/512.webp"
           alt="📧"
           width={48}
           height={48}

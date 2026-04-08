@@ -1,0 +1,29 @@
+ M apps/auth/next.config.mjs
+ M apps/auth/src/app/[locale]/(auth)/page.tsx
+ M apps/auth/src/app/[locale]/(auth)/password-reset/page.tsx
+ M apps/auth/src/app/[locale]/layout.tsx
+ M apps/auth/src/app/api/auth/forgot-password/send-otp/route.ts
+ M apps/auth/src/app/api/auth/forgot-password/verify-otp/route.ts
+ M apps/auth/src/app/api/auth/login/route.ts
+ M apps/auth/src/app/api/auth/reset-password/complete/route.ts
+ M apps/auth/src/app/api/auth/send-otp/route.ts
+ M apps/auth/src/app/api/auth/set-password/route.ts
+ M apps/auth/src/app/api/auth/verify-otp/route.ts
+ M apps/auth/src/components/forgot-password/forgot-password-wrapper.tsx
+ M apps/auth/src/components/forgot-password/step2-mfa.tsx
+ M apps/auth/src/components/forgot-password/step3-new-password.tsx
+ M apps/auth/src/components/password-reset-form.tsx
+ D apps/auth/src/components/providers/csrf-provider.tsx
+ M apps/auth/src/lib/api-client.ts
+ M apps/auth/src/lib/csrf.ts
+ M apps/auth/src/lib/email-service.ts
+ M apps/auth/src/lib/rate-limit.ts
+ M apps/auth/src/proxy.ts
+ M packages/i18n/src/routing.ts
+?? .cursor/
+?? apps/auth/src/lib/password-policy.ts
+?? apps/auth/src/lib/security-log.ts
+?? apps/auth/src/lib/security-response.ts
+?? tmp/git_status.txt
+?? tmp/supabase_verification_codes_cleanup.sql
+?? tmp/supabase_verification_codes_upgrade.sql

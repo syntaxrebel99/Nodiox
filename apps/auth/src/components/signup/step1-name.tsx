@@ -9,7 +9,7 @@ import { Field, FieldLabel, FieldDescription, Input, ShimmerButton } from "@nodi
 import { Link } from "@nodiox/i18n"
 import { type OnboardingData } from "~/lib/onboarding-schema"
 
-import { motion } from "framer-motion"
+import { motion, useReducedMotion } from "framer-motion"
 
 interface Step1NameProps {
   onNext: () => void;
@@ -21,6 +21,8 @@ export function Step1Name({ onNext, isLoading }: Step1NameProps) {
   const t = useTranslations("Index")
   const locale = useLocale()
   const { register, setValue, watch, trigger, formState: { errors } } = useFormContext<OnboardingData>()
+
+  const shouldReduceMotion = useReducedMotion()
 
   const [nameTouched, setNameTouched] = useState(false)
   const [isNameFocused, setIsNameFocused] = useState(false)
@@ -67,18 +69,22 @@ export function Step1Name({ onNext, isLoading }: Step1NameProps) {
   const showNameWarning = isNameFocused && nameTouched && !!errors.fullName
   const isComplete = fullName.trim().split(/\s+/).filter(Boolean).length >= 2;
 
+  const motionProps = shouldReduceMotion ? {} : {
+    initial: { opacity: 0, x: 20 },
+    animate: { opacity: 1, x: 0 },
+    exit: { opacity: 0, x: -20 },
+    transition: { duration: 0.3 }
+  }
+
   return (
     <motion.div 
-      initial={{ opacity: 0, x: 20 }}
-      animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: -20 }}
-      transition={{ duration: 0.3 }}
+      {...motionProps}
       className="flex flex-col gap-6"
     >
       <div className="flex flex-col items-center gap-1 text-center">
         <div className="relative mb-2 flex h-12 w-12 items-center justify-center">
           <Image
-            src="https://fonts.gstatic.com/s/e/notoemoji/latest/1f600/512.gif"
+            src="https://fonts.gstatic.com/s/e/notoemoji/latest/1f600/512.webp"
             alt="😀"
             width={48}
             height={48}

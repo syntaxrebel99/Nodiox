@@ -1,6 +1,7 @@
 import { Ratelimit } from "@upstash/ratelimit"
 import { Redis } from "@upstash/redis"
 import crypto from "crypto"
+import { getCorrelationId, securityLog } from "./security-log"
 
 // Reuse a single redis instance
 export const redisClient = Redis.fromEnv()
@@ -92,6 +93,34 @@ export function hashIdentifier(namespace: string, id: string): string {
   return crypto.createHash("sha256").update(`${namespace}:${id}`).digest("hex")
 }
 
+export function getClientIp(req: Request): string {
+  // Vercel is the trusted proxy in production.
+  // Only trust forwarded headers when we can detect a Vercel hop.
+  const isProd = process.env.NODE_ENV === "production"
+  const vercelId = req.headers.get("x-vercel-id")
+
+  const xff = req.headers.get("x-forwarded-for")
+  const xrip = req.headers.get("x-real-ip")
+
+  const forwardedIp = (xff?.split(",")[0] ?? xrip ?? "").trim()
+  const raw = isProd
+    ? (vercelId ? forwardedIp : "")
+    : (forwardedIp || "127.0.0.1")
+
+  if (!raw) return "127.0.0.1"
+
+  // Strip IPv6 brackets and any port suffix.
+  const noBrackets = raw.replace(/^\[/, "").replace(/\]$/, "")
+  return noBrackets.replace(/:\d+$/, "")
+}
+
+export function getTenantScope(req: Request): string {
+  // For multi-tenant SaaS, scope rate limits by the request host so tenants
+  // on different subdomains/custom domains don't share buckets.
+  const host = new URL(req.url).host.toLowerCase()
+  return hashIdentifier("tenant", host)
+}
+
 // Bounded Delay Tarpit (Max 1s delay)
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -102,22 +131,38 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
  */
 export async function enforceAuthRateLimits(options: {
   limiters: Ratelimit[],
-  ip: string,
+  req?: Request,
+  ip?: string,
   identifier?: string,
-  namespace: string
+  namespace: string,
+  tenantScope?: string,
 }) {
-  const { limiters, ip, identifier, namespace } = options
+  const { limiters, req, identifier, namespace } = options
+  const ip = options.ip ?? (req ? getClientIp(req) : "127.0.0.1")
+  const tenantScope = options.tenantScope ?? (req ? getTenantScope(req) : "public")
+  const correlationId = req ? getCorrelationId(req) : undefined
 
   // 1. Global IP Check (Instant rejection if flooding)
   const { success: globalOk } = await globalRateLimit.limit(ip)
-  if (!globalOk) throw new Error("Too many attempts. Please try again later.")
+  if (!globalOk) {
+    if (req) {
+      securityLog("warn", "rate_limit_blocked", {
+        correlationId,
+        namespace,
+        tenantScope,
+        ip,
+        layer: "global_ip",
+      })
+    }
+    throw new Error("Too many attempts. Please try again later.")
+  }
 
   // 2. Build tracking keys
   let normalizedId = ""
   let hashedId = ""
   if (identifier) {
     normalizedId = normalizeIdentifier(identifier)
-    hashedId = hashIdentifier(namespace, normalizedId)
+    hashedId = hashIdentifier(namespace, `${tenantScope}:${normalizedId}`)
   }
 
   // 3. Prepare Parallel Execution Tasks
@@ -125,14 +170,14 @@ export async function enforceAuthRateLimits(options: {
   
   for (const limiter of limiters) {
     // Add Layer 1: IP
-    limitTasks.push(limiter.limit(ip))
+    limitTasks.push(limiter.limit(`t:${tenantScope}:ip:${ip}`))
     
     // Add Layer 2 & 3 if identifier exists
     if (hashedId) {
       // Layer 2: ID
-      limitTasks.push(limiter.limit(`id:${hashedId}`))
+      limitTasks.push(limiter.limit(`t:${tenantScope}:id:${hashedId}`))
       // Layer 3: Composite IP+ID
-      limitTasks.push(limiter.limit(`composite:${ip}:${hashedId}`))
+      limitTasks.push(limiter.limit(`t:${tenantScope}:composite:${ip}:${hashedId}`))
     }
   }
 
@@ -143,6 +188,15 @@ export async function enforceAuthRateLimits(options: {
   let lowestRemaining = 1000;
   for (const result of results) {
     if (!result.success) {
+      if (req) {
+        securityLog("warn", "rate_limit_blocked", {
+          correlationId,
+          namespace,
+          tenantScope,
+          ip,
+          layer: "auth_tri_layer",
+        })
+      }
       throw new Error("Too many attempts. Please try again later.")
     }
     if (result.remaining < lowestRemaining) {

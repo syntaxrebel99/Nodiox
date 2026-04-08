@@ -1,7 +1,7 @@
-import { NextResponse } from "next/server"
 import { cookies } from "next/headers"
-import { timingSafeEqual } from "crypto"
+import { randomUUID, timingSafeEqual } from "crypto"
 import { securityRateLimit } from "./rate-limit"
+import { getCorrelationId, securityLog } from "./security-log"
 
 /**
  * Validates the CSRF token from the request header against the 
@@ -9,18 +9,18 @@ import { securityRateLimit } from "./rate-limit"
  * Strictly enforces Content-Type, Origin matching, and logs failures.
  */
 export async function validateCsrf(req: Request): Promise<{ success: boolean; error?: string }> {
-  const ip = req.headers.get("x-forwarded-for") ?? "127.0.0.1"
+  const ip = (req.headers.get("x-forwarded-for")?.split(",")[0] ?? "127.0.0.1").trim()
+  const correlationId = getCorrelationId(req)
 
   // Helper for structured logging of failures + abuse signal tracking
   const fail = async (reason: string, message: string) => {
-    // Audit log
-    console.warn(JSON.stringify({
-      event: "csrf_validation_failed",
+    securityLog("warn", "csrf_validation_failed", {
+      correlationId,
       ip,
       origin: req.headers.get("origin") ?? "missing",
       path: req.url,
-      reason
-    }))
+      reason,
+    })
 
     // Rate Limit CSRF Failures (Abuse Signal)
     // If same IP triggers many failures, we throttle them here
@@ -35,7 +35,7 @@ export async function validateCsrf(req: Request): Promise<{ success: boolean; er
   }
 
   // 1.1 Lock Methods: CSRF is only applicable for state-changing endpoints
-  const safeMethods = ["GET", "HEAD", "TRACE"]
+  const safeMethods = ["GET", "HEAD"]
   if (safeMethods.includes(req.method)) {
     return { success: true }
   }
@@ -56,13 +56,21 @@ export async function validateCsrf(req: Request): Promise<{ success: boolean; er
 
   // 3. Enforce Content-Type Strictly
   const contentType = req.headers.get("content-type")
-  if (!contentType?.includes("application/json")) {
+  // Allow standard JSON + vendor JSON, but don't hard-fail for form/multipart unless you
+  // intentionally require JSON-only on this route.
+  if (contentType && !/application\/json|application\/.+\+json/i.test(contentType)) {
+    // If a Content-Type is present and isn't JSON-ish, reject.
+    // (If you later add multipart/form-data endpoints, revisit this.)
     return await fail("invalid_content_type", "Invalid Content-Type. Expected application/json")
   }
 
   // 4. Strict Origin/Host Matching + Protocol Check
   const origin = req.headers.get("origin")
-  const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host")
+  // Avoid trusting spoofable forwarded headers for security decisions.
+  // Use the actual request URL host as the authority.
+  const requestUrl = new URL(req.url)
+  const host = requestUrl.host
+  const forwardedProto = req.headers.get("x-forwarded-proto")
   
   if (!origin) {
     return await fail("missing_origin", "Missing Origin header")
@@ -71,10 +79,14 @@ export async function validateCsrf(req: Request): Promise<{ success: boolean; er
   if (origin && host) {
     try {
       const originUrl = new URL(origin)
-      const expectedOrigin = `${originUrl.protocol}//${host}`
+      const isProd = process.env.NODE_ENV === "production"
+      const expectedProto =
+        forwardedProto ??
+        (isProd ? "https" : requestUrl.protocol.replace(":", ""))
+      const expectedOrigin = `${expectedProto}://${host}`
 
       // Compare exact expected origin string to catch protocol downgrades
-      if (originUrl.origin !== expectedOrigin && originUrl.host !== host) {
+      if (originUrl.origin !== expectedOrigin || originUrl.host !== host) {
         return await fail("origin_mismatch", "Cross-Origin requests are forbidden")
       }
     } catch {
@@ -106,10 +118,11 @@ export async function validateCsrf(req: Request): Promise<{ success: boolean; er
  */
 export async function rotateCsrfToken() {
   const cookieStore = await cookies()
-  const token = crypto.randomUUID()
+  const token = randomUUID()
   
   cookieStore.set("nodiox_csrf_token", token, {
-    httpOnly: true,
+    // Option C (Double Submit): must be readable by JS to echo in X-CSRF-Token.
+    httpOnly: false,
     secure: process.env.NODE_ENV === "production",
     sameSite: "strict",
     path: "/",

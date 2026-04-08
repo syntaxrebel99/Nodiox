@@ -27,17 +27,21 @@ export function useMfaLogic({ length = 6, onComplete, onResend }: UseMfaLogicPro
 
   // Resend countdown timer
   useEffect(() => {
-    let interval: NodeJS.Timeout
-    if (timer > 0) {
-      interval = setInterval(() => setTimer((prev) => prev - 1), 1000)
-    }
+    const interval: NodeJS.Timeout = setInterval(() => {
+      setTimer((prev) => {
+        if (prev <= 1) {
+          clearInterval(interval)
+          return 0
+        }
+        return prev - 1
+      })
+    }, 1000)
     return () => clearInterval(interval)
   }, [timer])
 
   // Global step time tracker
   useEffect(() => {
-    let interval: NodeJS.Timeout
-    interval = setInterval(() => setStepTime((prev) => prev + 1), 1000)
+    const interval: NodeJS.Timeout = setInterval(() => setStepTime((prev) => prev + 1), 1000)
     return () => clearInterval(interval)
   }, [])
 

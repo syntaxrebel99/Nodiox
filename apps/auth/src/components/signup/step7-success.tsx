@@ -3,7 +3,7 @@
 import * as React from "react"
 import { useTranslations } from "next-intl"
 import Image from "next/image"
-import { motion } from "framer-motion"
+import { motion, useReducedMotion } from "framer-motion"
 import { ShimmerButton } from "@nodiox/ui"
 
 interface Step7SuccessProps {
@@ -17,20 +17,26 @@ export function Step7Success({ firstName, alreadyRegistered }: Step7SuccessProps
   const t = useTranslations("Onboarding")
   const router = useRouter()
 
+  const shouldReduceMotion = useReducedMotion()
+
   const titleKey = alreadyRegistered ? "step7AlreadyRegisteredTitle" : "step7Title"
   const subtitleKey = alreadyRegistered ? "step7AlreadyRegisteredSubtitle" : "step7Subtitle"
 
+  const motionProps = shouldReduceMotion ? {} : {
+    initial: { opacity: 0, scale: 0.95 },
+    animate: { opacity: 1, scale: 1 },
+    transition: { duration: 0.4, ease: "easeOut" as const }
+  }
+
   return (
     <motion.div
-      initial={{ opacity: 0, scale: 0.95 }}
-      animate={{ opacity: 1, scale: 1 }}
-      transition={{ duration: 0.4, ease: "easeOut" }}
+      {...motionProps}
       className="flex flex-col items-center justify-center gap-6 py-4"
     >
       <div className="flex flex-col items-center gap-2 text-center">
         <div className="relative mb-2 flex h-12 w-12 items-center justify-center">
           <Image
-            src="https://fonts.gstatic.com/s/e/notoemoji/latest/1f973/512.gif"
+            src="https://fonts.gstatic.com/s/e/notoemoji/latest/1f389/512.webp"
             alt="🥳"
             width={48}
             height={48}

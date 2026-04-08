@@ -9,11 +9,11 @@ import { cn } from "@nodiox/utils"
 import { X } from "lucide-react"
 import { ShimmerButton, Input, Field, FieldLabel } from "@nodiox/ui"
 import { Link } from "@nodiox/i18n"
-import { motion } from "framer-motion"
+import { motion, useReducedMotion } from "framer-motion"
 
 import { apiFetch } from "~/lib/api-client"
 
-import type { ForgotPasswordData } from "~/lib/forgot-password-schema"
+import type { ForgotPasswordData } from "~/lib/password-schemas"
 
 interface Step1EmailProps {
   onNext: () => void
@@ -25,6 +25,8 @@ export function Step1Email({ onNext }: Step1EmailProps) {
   const [isLoading, setIsLoading] = useState(false)
   const [serverError, setServerError] = useState<string | null>(null)
   
+  const shouldReduceMotion = useReducedMotion()
+
   const [isEmailFocused, setIsEmailFocused] = useState(false)
   const [isEmailTouched, setIsEmailTouched] = useState(false)
 
@@ -64,13 +66,17 @@ export function Step1Email({ onNext }: Step1EmailProps) {
     }
   }
 
+  const motionProps = shouldReduceMotion ? {} : {
+    initial: { opacity: 0, x: 20 },
+    animate: { opacity: 1, x: 0 },
+    exit: { opacity: 0, x: -20 },
+    transition: { duration: 0.3 }
+  }
+
   return (
     <motion.form
       key="form"
-      initial={{ opacity: 0, x: 20 }}
-      animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: -20 }}
-      transition={{ duration: 0.3 }}
+      {...motionProps}
       className="flex flex-col gap-6"
       onSubmit={handleNext}
       aria-labelledby="forgot-password-title"
@@ -80,7 +86,7 @@ export function Step1Email({ onNext }: Step1EmailProps) {
       <div className="flex flex-col items-center gap-1 text-center">
         <div className="relative mb-2 flex h-12 w-12 items-center justify-center">
           <Image
-            src="https://fonts.gstatic.com/s/e/notoemoji/latest/1f512/512.gif"
+            src="https://fonts.gstatic.com/s/e/notoemoji/latest/1f512/512.webp"
             alt="🔒"
             width={48}
             height={48}
