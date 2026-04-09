@@ -1,24 +1,32 @@
 import { NextResponse } from "next/server"
 import { cookies } from "next/headers"
 import { createClient } from "~/lib/supabase/server"
-import { createAdminClient } from "~/lib/supabase/admin"
 import { EmailService } from "~/lib/email-service"
 import { enforceAuthRateLimits, otpVerifyLimiters } from "~/lib/rate-limit"
 import { z } from "zod"
 import { validateCsrf, rotateCsrfToken } from "~/lib/csrf"
 import { redisClient, hashIdentifier } from "~/lib/rate-limit"
 import { respondError } from "~/lib/security-response"
+import { SmsService } from "~/lib/sms-service"
 import {
   consumePendingLoginChallenge,
   getPendingLoginChallenge,
   LOGIN_CHALLENGE_COOKIE,
 } from "~/lib/pending-login"
+import {
+  getSignupPhoneCookieOptions,
+  issueVerifiedSignupPhoneToken,
+  SIGNUP_PHONE_VERIFICATION_COOKIE,
+} from "~/lib/signup-phone-verification"
 
 import { normalizeEmail } from "~/lib/normalize-email"
+import { normalizePhoneNumber, validatePhoneNumber } from "~/lib/phone-validation"
 
 const verifyOtpSchema = z.object({
   email: z.string().email().optional(),
-  phone: z.string().min(5).optional(),
+  phone: z.string().refine((value) => validatePhoneNumber(value, "DZ"), {
+    message: "Invalid phone number",
+  }).optional(),
   token: z.string().min(6),
   type: z.enum(["signup", "sms", "email"]),
   flow: z.enum(["login", "signup"]).optional(),
@@ -45,8 +53,9 @@ export async function POST(req: Request) {
       )
     }
 
-    const { email: rawEmail, phone, token, type, flow } = result.data
+    const { email: rawEmail, phone: rawPhone, token, type, flow } = result.data
     const email = rawEmail ? normalizeEmail(rawEmail) : undefined
+    const phone = rawPhone ? normalizePhoneNumber(rawPhone) : undefined
 
     // 2. Execute Tri-Layer Rate Limiting (IP + ID, Bounded Tarpit)
     try {
@@ -68,6 +77,23 @@ export async function POST(req: Request) {
 
     // 3. Init Supabase Clients
     const supabase = await createClient()
+
+    const establishSessionFromPendingLogin = async () => {
+      if (!pendingLogin?.accessToken || !pendingLogin?.refreshToken) {
+        return { error: "Failed to establish secure session. Please try again.", user: null }
+      }
+
+      const { data: sessionData, error: sessionError } = await supabase.auth.setSession({
+        access_token: pendingLogin.accessToken,
+        refresh_token: pendingLogin.refreshToken,
+      })
+
+      if (sessionError) {
+        return { error: sessionError.message, user: null }
+      }
+
+      return { error: null, user: sessionData.user }
+    }
 
     // 4. Handle Email OTP (Resend Engine)
     if (type === "email" || type === "signup") {
@@ -121,34 +147,15 @@ export async function POST(req: Request) {
         return response
       }
 
-      // c) For Login MFA -> Bridge to a real Supabase session
-      const adminClient = createAdminClient()
-      const { data: { properties }, error: linkError } = await adminClient.auth.admin.generateLink({
-        type: "magiclink",
-        email,
-      })
-
-      if (linkError || !properties?.email_otp) {
-        console.error("MFA Bridge Error:", linkError)
-        return NextResponse.json(
-          { error: "Failed to establish secure session. Please try again." },
-          { status: 500 }
-        )
-      }
-
-      const { data: verifyData, error: finalError } = await supabase.auth.verifyOtp({
-        email,
-        token: properties.email_otp,
-        type: "magiclink",
-      })
-
-      if (finalError) {
-        return NextResponse.json({ error: finalError.message }, { status: 401 })
+      // c) For Login MFA -> restore the pending password-authenticated session
+      const { error: sessionError, user } = await establishSessionFromPendingLogin()
+      if (sessionError || !user) {
+        return NextResponse.json({ error: sessionError || "Failed to establish secure session. Please try again." }, { status: 500 })
       }
 
       // CSRF Token Rotation on successful MFA login
       const newCsrf = await rotateCsrfToken()
-      const response = NextResponse.json({ success: true, user: verifyData.user })
+      const response = NextResponse.json({ success: true, user })
       if (challengeToken) {
         await consumePendingLoginChallenge(challengeToken)
         response.cookies.delete(LOGIN_CHALLENGE_COOKIE)
@@ -174,25 +181,51 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Phone is required" }, { status: 400 })
     }
 
-    const { data, error } = await supabase.auth.verifyOtp({
-      phone,
-      token,
-      type: "sms",
-    })
+    if (flow === "signup") {
+      const { success: isVerified, error: verifyError } = await SmsService.verifyOtp(phone, token, "signup")
+      if (!isVerified) {
+        return NextResponse.json(
+          { error: verifyError || "Invalid or expired verification code" },
+          { status: 401 }
+        )
+      }
 
-    if (error) {
+      const phoneToken = await issueVerifiedSignupPhoneToken(phone)
+      const newCsrf = await rotateCsrfToken()
+      const response = NextResponse.json({ success: true, message: "Phone verified. Please continue." })
+      response.cookies.set(
+        SIGNUP_PHONE_VERIFICATION_COOKIE,
+        phoneToken,
+        getSignupPhoneCookieOptions()
+      )
+      response.headers.set("x-csrf-token", newCsrf)
+      return response
+    }
+
+    if (flow !== "login") {
+      return NextResponse.json({ error: "Phone verification flow is required" }, { status: 400 })
+    }
+
+    const { success: isVerified, error: verifyError } = await SmsService.verifyOtp(phone, token, "login_mfa")
+    if (!isVerified) {
       return NextResponse.json(
-        { error: error.message },
-        { status: error.status || 401 }
+        { error: verifyError || "Invalid or expired verification code" },
+        { status: 401 }
+      )
+    }
+
+    const { error: sessionError, user } = await establishSessionFromPendingLogin()
+    if (sessionError || !user) {
+      return NextResponse.json(
+        { error: sessionError || "Failed to establish secure session. Please try again." },
+        { status: 500 }
       )
     }
 
     // CSRF Token Rotation on successful OTP verification (Phone flow)
     const newCsrf = await rotateCsrfToken()
 
-    // If successful, Supabase automatically establishes a session cookie 
-    // via our @supabase/ssr server client's `setAll` implementation.
-    const response = NextResponse.json({ success: true, user: data.user })
+    const response = NextResponse.json({ success: true, user })
     if (flow === "login" && challengeToken) {
       await consumePendingLoginChallenge(challengeToken)
       response.cookies.delete(LOGIN_CHALLENGE_COOKIE)

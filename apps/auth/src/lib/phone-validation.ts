@@ -14,10 +14,31 @@ export function cleanPhoneNumber(value: string): string {
 }
 
 /**
+ * Normalizes supported Algerian phone numbers into E.164 format.
+ */
+export function normalizePhoneNumber(phone: string): string {
+  const cleaned = cleanPhoneNumber(phone);
+
+  if (cleaned.startsWith("+213")) {
+    return cleaned;
+  }
+
+  if (cleaned.startsWith("00213")) {
+    return `+${cleaned.slice(2)}`;
+  }
+
+  if (cleaned.startsWith("0")) {
+    return `+213${cleaned.slice(1)}`;
+  }
+
+  return cleaned;
+}
+
+/**
  * Validates a phone number against supported region patterns.
  */
 export function validatePhoneNumber(phone: string, region: string = "DZ"): boolean {
-  const cleaned = cleanPhoneNumber(phone);
+  const cleaned = normalizePhoneNumber(phone);
   const pattern = SUPPORTED_PHONE_REGIONS[region];
   
   if (!pattern) {

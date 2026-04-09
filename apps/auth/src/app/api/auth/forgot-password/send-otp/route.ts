@@ -7,7 +7,7 @@ import { z } from "zod"
 import { validateCsrf } from "~/lib/csrf"
 import { respondError } from "~/lib/security-response"
 
-import { normalizeEmail } from "~/lib/normalize-email"
+import { normalizeEmail, sanitizeEmail } from "~/lib/normalize-email"
 
 const forgotPasswordSchema = z.object({
   email: z.string().email(),
@@ -32,10 +32,10 @@ export async function POST(req: Request) {
       )
     }
 
-    let { email } = result.data
+    const { email: rawEmail } = result.data
 
-    // Normalize email
-    email = normalizeEmail(email)
+    const recipientEmail = sanitizeEmail(rawEmail)
+    const email = normalizeEmail(recipientEmail)
 
     // 2. Execute Tri-Layer Rate Limiting (IP + ID, Bounded Tarpit)
     try {
@@ -69,7 +69,9 @@ export async function POST(req: Request) {
     try {
       if (userExists) {
         // Only send the real email if the user is in our system
-        await EmailService.sendOtp(email, "forgot_password", locale)
+        await EmailService.sendOtp(email, "forgot_password", locale, {
+          recipientEmail,
+        })
       } else {
         // Optional: Add a small artificial delay to match the timing of a real send
         await new Promise(resolve => setTimeout(resolve, Math.random() * 500 + 400))

@@ -113,4 +113,23 @@ test.describe("Signup Flow Security & MFA wiring", () => {
       phone: "+213555123456",
     })
   })
+
+  test("password step draft restores correctly after a remount", async ({ page }) => {
+    await page.addInitScript(() => {
+      sessionStorage.setItem(
+        "nodiox_onboarding_draft",
+        JSON.stringify({
+          step: 6,
+          fullName: "John Doe",
+          email: "john@example.com",
+          phoneNumber: "+213555123456",
+        })
+      )
+    })
+
+    await page.goto("/en/signup")
+    await expect(page.getByRole("heading", { name: /Set your password/i })).toBeVisible()
+    await page.reload()
+    await expect(page.getByRole("heading", { name: /Set your password/i })).toBeVisible()
+  })
 })

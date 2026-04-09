@@ -9,8 +9,10 @@ const LOGIN_CHALLENGE_TTL_SECONDS = 60 * 15
 
 export interface PendingLoginChallenge {
   method: "email" | "phone"
+  accessToken?: string
   email?: string
   phone?: string
+  refreshToken?: string
   issuedAt: string
 }
 

@@ -47,6 +47,31 @@ export function SignupForm({
     },
     mode: "onChange",
   })
+  const hasRestoredDraft = useRef(false)
+
+  const persistDraft = React.useCallback((nextStep: number, values?: OnboardingData) => {
+    if (typeof window === "undefined") return
+
+    if (nextStep === 7) {
+      sessionStorage.removeItem(STORAGE_KEY)
+      return
+    }
+
+    const currentValues = values ?? methods.getValues()
+    const { password, confirmPassword, ...safeValues } = currentValues
+    sessionStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        ...safeValues,
+        step: nextStep,
+      })
+    )
+  }, [methods])
+
+  const goToStep = React.useCallback((nextStep: number) => {
+    persistDraft(nextStep)
+    setStep(nextStep)
+  }, [persistDraft])
 
   // Derive first name for personalized success message
   const fullName = methods.watch("fullName") || ""
@@ -70,10 +95,19 @@ export function SignupForm({
         console.error("Failed to re-hydrate onboarding draft:", e)
       }
     }
+
+    hasRestoredDraft.current = true
   }, [methods])
+
+  useEffect(() => {
+    if (!hasRestoredDraft.current) return
+    persistDraft(step)
+  }, [persistDraft, step])
 
   // Auto-persist changes to session storage
   useEffect(() => {
+    if (!hasRestoredDraft.current) return
+
     // Stop persisting if we reached success state
     if (step === 7) return;
 
@@ -108,7 +142,7 @@ export function SignupForm({
       
       sessionStorage.removeItem(STORAGE_KEY)
       setAlreadyRegistered(false)
-      setStep(7) // Transition to Success!
+      goToStep(7) // Transition to Success!
     } catch (err: any) {
       setServerError(err.message)
     } finally {
@@ -180,7 +214,7 @@ export function SignupForm({
                 {step === 1 && (
                   <Step1Name 
                     key="step1"
-                    onNext={() => setStep(2)} 
+                    onNext={() => goToStep(2)} 
                     isLoading={isLoading} 
                   />
                 )}
@@ -198,14 +232,14 @@ export function SignupForm({
                         })
                         const data = await res.json()
                         if (!res.ok) throw new Error(data.error || "Failed to send OTP")
-                        setStep(3)
+                        goToStep(3)
                       } catch (err: any) {
                         setServerError(err.message)
                       } finally {
                         setIsLoading(false)
                       }
                     }} 
-                    onBack={() => setStep(1)} 
+                    onBack={() => goToStep(1)} 
                     isLoading={isLoading}
                     serverError={serverError}
                     setServerError={setServerError}
@@ -215,8 +249,8 @@ export function SignupForm({
                 {step === 3 && (
                   <Step3EmailMfa 
                     key="step3"
-                    onNext={() => setStep(4)} 
-                    onBack={() => setStep(2)} 
+                    onNext={() => goToStep(4)} 
+                    onBack={() => goToStep(2)} 
                     isLoading={isLoading} 
                     setIsLoading={setIsLoading} 
                   />
@@ -235,14 +269,14 @@ export function SignupForm({
                         })
                         const data = await res.json()
                         if (!res.ok) throw new Error(data.error || "Failed to send SMS") 
-                        setStep(5)
+                        goToStep(5)
                       } catch (err: any) {
                         setServerError(err.message)
                       } finally {
                         setIsLoading(false)
                       }
                     }} 
-                    onBack={() => setStep(3)} 
+                    onBack={() => goToStep(3)} 
                     isLoading={isLoading}
                     serverError={serverError}
                     setServerError={setServerError}
@@ -252,8 +286,8 @@ export function SignupForm({
                 {step === 5 && (
                   <Step5PhoneMfa 
                     key="step5"
-                    onNext={() => setStep(6)} 
-                    onBack={() => setStep(4)} 
+                    onNext={() => goToStep(6)} 
+                    onBack={() => goToStep(4)} 
                     isLoading={isLoading} 
                     setIsLoading={setIsLoading} 
                   />
@@ -262,7 +296,7 @@ export function SignupForm({
                 {step === 6 && (
                   <Step6Password 
                     key="step6"
-                    onBack={() => setStep(5)} 
+                    onBack={() => goToStep(5)} 
                     isLoading={isLoading}
                     serverError={serverError}
                     setServerError={setServerError}

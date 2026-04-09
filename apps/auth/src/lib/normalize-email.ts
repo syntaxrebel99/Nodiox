@@ -4,8 +4,12 @@
  * 
  * Example: 'john.doe+test@gmail.com' -> 'johndoe@gmail.com'
  */
+export function sanitizeEmail(email: string): string {
+  return email.toLowerCase().trim()
+}
+
 export function normalizeEmail(email: string): string {
-  const trimmed = email.toLowerCase().trim()
+  const trimmed = sanitizeEmail(email)
   const [local, domain] = trimmed.split('@')
   
   if (!local || !domain) return trimmed

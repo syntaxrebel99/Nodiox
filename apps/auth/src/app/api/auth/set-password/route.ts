@@ -8,11 +8,18 @@ import { validateCsrf, rotateCsrfToken } from "~/lib/csrf"
 import { validatePasswordPolicy } from "~/lib/password-policy"
 import { redisClient, hashIdentifier } from "~/lib/rate-limit"
 import { respondError } from "~/lib/security-response"
+import {
+  consumeVerifiedSignupPhone,
+  SIGNUP_PHONE_VERIFICATION_COOKIE,
+} from "~/lib/signup-phone-verification"
+import { normalizePhoneNumber, validatePhoneNumber } from "~/lib/phone-validation"
 
 const setPasswordSchema = z.object({
   password: z.string().min(8),
   fullName: z.string().min(2),
-  phone: z.string().optional(),
+  phone: z.string().refine((value) => validatePhoneNumber(value, "DZ"), {
+    message: "Invalid phone number",
+  }).optional(),
 })
 
 export async function POST(req: Request) {
@@ -33,7 +40,8 @@ export async function POST(req: Request) {
       )
     }
 
-    const { password, fullName, phone } = result.data
+    const { password, fullName, phone: rawPhone } = result.data
+    const phone = rawPhone ? normalizePhoneNumber(rawPhone) : undefined
 
     const policy = validatePasswordPolicy(password)
     if (!policy.ok) {
@@ -60,6 +68,21 @@ export async function POST(req: Request) {
       )
     }
 
+    let verifiedPhone: string | null = null
+    if (phone) {
+      const signupPhoneToken = cookieStore.get(SIGNUP_PHONE_VERIFICATION_COOKIE)?.value
+      verifiedPhone = signupPhoneToken
+        ? await consumeVerifiedSignupPhone(signupPhoneToken)
+        : null
+
+      if (!verifiedPhone || verifiedPhone !== phone) {
+        return NextResponse.json(
+          { error: "Phone verification expired or not found. Please restart signup." },
+          { status: 401 }
+        )
+      }
+    }
+
     const admin = createAdminClient()
     const supabase = await createClient()
 
@@ -69,9 +92,11 @@ export async function POST(req: Request) {
       email: verifiedEmail,
       password: password,
       email_confirm: true,
+      phone: verifiedPhone ?? undefined,
+      phone_confirm: !!verifiedPhone,
       user_metadata: {
         full_name: fullName,
-        phone: phone,
+        phone: verifiedPhone ?? phone,
       }
     })
 
@@ -88,6 +113,9 @@ export async function POST(req: Request) {
     // 3. Clear the signup verification cookie + redis token
     const response = NextResponse.json({ success: true, user: userData.user })
     response.cookies.delete("nodiox_signup_token")
+    if (verifiedPhone) {
+      response.cookies.delete(SIGNUP_PHONE_VERIFICATION_COOKIE)
+    }
     if (signupTokenHash) {
       await redisClient.del(`@nodiox/signup_token:${signupTokenHash}`)
     }

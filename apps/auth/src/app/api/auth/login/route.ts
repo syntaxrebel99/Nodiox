@@ -6,6 +6,7 @@ import { enforceAuthRateLimits, loginLimiters } from "~/lib/rate-limit"
 import { z } from "zod"
 import { validateCsrf, rotateCsrfToken } from "~/lib/csrf"
 import { respondError } from "~/lib/security-response"
+import { SmsService } from "~/lib/sms-service"
 import {
   getLoginChallengeCookieOptions,
   invalidatePendingLoginChallenge,
@@ -13,11 +14,14 @@ import {
   LOGIN_CHALLENGE_COOKIE,
 } from "~/lib/pending-login"
 
-import { normalizeEmail } from "~/lib/normalize-email"
+import { normalizeEmail, sanitizeEmail } from "~/lib/normalize-email"
+import { normalizePhoneNumber, validatePhoneNumber } from "~/lib/phone-validation"
 
 const loginSchema = z.object({
   email: z.string().email().optional(),
-  phone: z.string().optional(),
+  phone: z.string().refine((value) => validatePhoneNumber(value, "DZ"), {
+    message: "Invalid phone number",
+  }).optional(),
   password: z.string().min(1),
 }).refine(data => data.email || data.phone, {
   message: "Either email or phone is required",
@@ -42,8 +46,10 @@ export async function POST(req: Request) {
       )
     }
 
-    const { email: rawEmail, phone, password } = result.data
-    const email = rawEmail ? normalizeEmail(rawEmail) : undefined
+    const { email: rawEmail, phone: rawPhone, password } = result.data
+    const recipientEmail = rawEmail ? sanitizeEmail(rawEmail) : undefined
+    const email = recipientEmail ? normalizeEmail(recipientEmail) : undefined
+    const phone = rawPhone ? normalizePhoneNumber(rawPhone) : undefined
 
     // 2. Execute Tri-Layer Rate Limiting (IP + ID, Bounded Tarpit)
     try {
@@ -59,9 +65,10 @@ export async function POST(req: Request) {
 
     const cookieStore = await cookies()
     const authClient = createStatelessClient()
+    const locale = cookieStore.get("NEXT_LOCALE")?.value || "en"
 
     // 3. Verify credentials without issuing the final session yet.
-    const { error: signInError } = email
+    const { data: signInData, error: signInError } = email
       ? await authClient.auth.signInWithPassword({ email, password })
       : await authClient.auth.signInWithPassword({ phone: phone!, password })
 
@@ -75,14 +82,11 @@ export async function POST(req: Request) {
     // 4. If password is valid, send factor 2 and issue a short-lived login challenge.
     try {
       if (email) {
-        const locale = cookieStore.get("NEXT_LOCALE")?.value || "en"
-        await EmailService.sendOtp(email, "login_mfa", locale)
-      } else if (phone) {
-        const { error: otpError } = await authClient.auth.signInWithOtp({
-          phone,
-          options: { shouldCreateUser: false },
+        await EmailService.sendOtp(email, "login_mfa", locale, {
+          recipientEmail,
         })
-        if (otpError) throw otpError
+      } else if (phone) {
+        await SmsService.sendOtp(phone, "login_mfa", locale)
       }
 
       const staleChallengeToken = cookieStore.get(LOGIN_CHALLENGE_COOKIE)?.value
@@ -92,8 +96,10 @@ export async function POST(req: Request) {
 
       const challengeToken = await issuePendingLoginChallenge({
         method: email ? "email" : "phone",
-        email,
+        accessToken: signInData.session?.access_token,
+        email: email ?? signInData.user?.email ?? undefined,
         phone,
+        refreshToken: signInData.session?.refresh_token,
       })
 
       const newToken = await rotateCsrfToken()

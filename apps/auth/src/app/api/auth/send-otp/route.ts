@@ -6,12 +6,16 @@ import { enforceAuthRateLimits, otpSendLimiters, otpSendCooldownLimit } from "~/
 import { z } from "zod"
 import { validateCsrf } from "~/lib/csrf"
 import { respondError } from "~/lib/security-response"
+import { SmsService } from "~/lib/sms-service"
+import { normalizePhoneNumber, validatePhoneNumber } from "~/lib/phone-validation"
 
-import { normalizeEmail } from "~/lib/normalize-email"
+import { normalizeEmail, sanitizeEmail } from "~/lib/normalize-email"
 
 const sendOtpSchema = z.object({
   email: z.string().email().optional(),
-  phone: z.string().min(5).optional(),
+  phone: z.string().refine((value) => validatePhoneNumber(value, "DZ"), {
+    message: "Invalid phone number",
+  }).optional(),
 }).refine(data => data.email || data.phone, {
   message: "Either email or phone is required",
 })
@@ -35,8 +39,10 @@ export async function POST(req: Request) {
       )
     }
 
-    const { email: rawEmail, phone } = result.data
-    const email = rawEmail ? normalizeEmail(rawEmail) : undefined
+    const { email: rawEmail, phone: rawPhone } = result.data
+    const recipientEmail = rawEmail ? sanitizeEmail(rawEmail) : undefined
+    const email = recipientEmail ? normalizeEmail(recipientEmail) : undefined
+    const phone = rawPhone ? normalizePhoneNumber(rawPhone) : undefined
 
     // 2. Execute Tri-Layer Rate Limiting (IP + ID, Bounded Tarpit)
     try {
@@ -66,19 +72,24 @@ export async function POST(req: Request) {
       if (email) {
         if (userExists) {
           // If they already have an account, send the security alert instead of a signup OTP
-          await EmailService.sendSignupAttemptAlert(email, locale)
+          await EmailService.sendSignupAttemptAlert(email, locale, {
+            recipientEmail,
+          })
         } else {
           // New user -> send standard signup OTP
-          await EmailService.sendOtp(email, "signup", locale)
+          await EmailService.sendOtp(email, "signup", locale, {
+            recipientEmail,
+          })
         }
+      } else if (phone) {
+        await SmsService.sendOtp(phone, "signup", locale)
       }
-      // Note: Phone is currently not handled by custom Resend Engine
       
       return NextResponse.json({ success: true })
     } catch (error: any) {
       console.error("Signup OTP Send Error:", error)
       return NextResponse.json(
-        { error: error.message || "Failed to send verification email" },
+        { error: error.message || "Failed to send verification code" },
         { status: 500 }
       )
     }

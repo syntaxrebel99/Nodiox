@@ -121,6 +121,13 @@ export function getTenantScope(req: Request): string {
   return hashIdentifier("tenant", host)
 }
 
+function shouldBypassAuthRateLimits() {
+  return (
+    process.env.NODE_ENV !== "production" &&
+    process.env.AUTH_DISABLE_RATE_LIMITS === "true"
+  )
+}
+
 // Bounded Delay Tarpit (Max 1s delay)
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -137,6 +144,10 @@ export async function enforceAuthRateLimits(options: {
   namespace: string,
   tenantScope?: string,
 }) {
+  if (shouldBypassAuthRateLimits()) {
+    return
+  }
+
   const { limiters, req, identifier, namespace } = options
   const ip = options.ip ?? (req ? getClientIp(req) : "127.0.0.1")
   const tenantScope = options.tenantScope ?? (req ? getTenantScope(req) : "public")

@@ -85,6 +85,21 @@ function applyLayout(title: string, content: string, locale: string, disclaimer:
 }
 
 export const EmailService = {
+  _getFromAddress(type: "default" | "security" = "default") {
+    const defaultEmail = process.env.RESEND_FROM_EMAIL?.trim()
+    const securityEmail = process.env.RESEND_SECURITY_FROM_EMAIL?.trim() || defaultEmail
+
+    if (process.env.NODE_ENV === "production" && !defaultEmail) {
+      throw new Error("Missing RESEND_FROM_EMAIL in production")
+    }
+
+    const fallbackEmail = "onboarding@resend.dev"
+    const senderEmail = type === "security" ? (securityEmail || fallbackEmail) : (defaultEmail || fallbackEmail)
+    const senderName = type === "security" ? "Nodiox Security" : "Nodiox"
+
+    return `${senderName} <${senderEmail}>`
+  },
+
   _otpPepper() {
     const pepper = process.env.OTP_PEPPER
     if (process.env.NODE_ENV === "production" && (!pepper || pepper.length < 16)) {
@@ -124,10 +139,16 @@ export const EmailService = {
   /**
    * Generates, stores, and sends a 6-digit OTP via Resend.
    */
-  async sendOtp(email: string, type: OtpType, locale: string = 'en') {
+  async sendOtp(
+    email: string,
+    type: OtpType,
+    locale: string = 'en',
+    options?: { recipientEmail?: string }
+  ) {
     try {
       const supabase = createAdminClient()
       const t = await getTranslations({ locale, namespace: 'Emails' })
+      const recipientEmail = options?.recipientEmail ?? email
       
       // 1. Generate 6-digit code
       const code = crypto.randomInt(100000, 999999).toString()
@@ -173,8 +194,8 @@ export const EmailService = {
       
       const { error: resendError } = await withRetry(async () => {
         return await resend.emails.send({
-          from: "Nodiox <onboarding@resend.dev>",
-          to: email,
+          from: EmailService._getFromAddress(),
+          to: recipientEmail,
           subject: t('otpSubject'),
           html: applyLayout(
             t('otpTitle'), 
@@ -337,7 +358,7 @@ export const EmailService = {
 
       const { error: resendError } = await withRetry(async () => {
         return await resend.emails.send({
-          from: "Nodiox Security <onboarding@resend.dev>",
+          from: EmailService._getFromAddress("security"),
           to: email,
           subject: t('passwordChangedSubject'),
           html: applyLayout(
@@ -384,17 +405,22 @@ export const EmailService = {
   /**
    * Sends an alert when someone tries to signup with an existing email.
    */
-  async sendSignupAttemptAlert(email: string, locale: string = 'en') {
+  async sendSignupAttemptAlert(
+    email: string,
+    locale: string = 'en',
+    options?: { recipientEmail?: string }
+  ) {
     try {
       const t = await getTranslations({ locale, namespace: 'Emails' })
       const hashedEmail = hashIdentifier("email", email)
       const siteUrl = EmailService._getSiteUrl()
+      const recipientEmail = options?.recipientEmail ?? email
       console.log(`[EmailService] Sending signup attempt alert to [${hashedEmail}] (Locale: ${locale})`)
 
       const { error: resendError } = await withRetry(async () => {
         return await resend.emails.send({
-          from: "Nodiox Security <onboarding@resend.dev>",
-          to: email,
+          from: EmailService._getFromAddress("security"),
+          to: recipientEmail,
           subject: t('signupAttemptSubject'),
           html: applyLayout(
             t('signupAttemptTitle'), 
@@ -450,7 +476,7 @@ export const EmailService = {
 
       const { error: resendError } = await withRetry(async () => {
         return await resend.emails.send({
-          from: "Nodiox <onboarding@resend.dev>",
+          from: EmailService._getFromAddress(),
           to: email,
           subject: t('welcomeSubject', { firstName }),
           html: applyLayout(
