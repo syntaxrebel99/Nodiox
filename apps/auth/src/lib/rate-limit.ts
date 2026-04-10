@@ -2,9 +2,15 @@ import { Ratelimit } from "@upstash/ratelimit"
 import { Redis } from "@upstash/redis"
 import crypto from "crypto"
 import { getCorrelationId, securityLog } from "./security-log"
+import { getAuthEnv } from "./env"
+
+const authEnv = getAuthEnv()
 
 // Reuse a single redis instance
-export const redisClient = Redis.fromEnv()
+export const redisClient = new Redis({
+  url: authEnv.UPSTASH_REDIS_REST_URL,
+  token: authEnv.UPSTASH_REDIS_REST_TOKEN,
+})
 
 // 1. Core Security Violations Limiter (Keep exact export for CSRF/CSP usage)
 export const securityRateLimit = new Ratelimit({
@@ -122,10 +128,8 @@ export function getTenantScope(req: Request): string {
 }
 
 function shouldBypassAuthRateLimits() {
-  return (
-    process.env.NODE_ENV !== "production" &&
-    process.env.AUTH_DISABLE_RATE_LIMITS === "true"
-  )
+  const env = getAuthEnv()
+  return env.NODE_ENV !== "production" && env.AUTH_DISABLE_RATE_LIMITS
 }
 
 // Bounded Delay Tarpit (Max 1s delay)

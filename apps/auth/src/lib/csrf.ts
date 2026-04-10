@@ -2,6 +2,7 @@ import { cookies } from "next/headers"
 import { randomUUID, timingSafeEqual } from "crypto"
 import { securityRateLimit } from "./rate-limit"
 import { getCorrelationId, securityLog } from "./security-log"
+import { getAuthEnv } from "./env"
 
 /**
  * Validates the CSRF token from the request header against the 
@@ -11,6 +12,9 @@ import { getCorrelationId, securityLog } from "./security-log"
 export async function validateCsrf(req: Request): Promise<{ success: boolean; error?: string }> {
   const ip = (req.headers.get("x-forwarded-for")?.split(",")[0] ?? "127.0.0.1").trim()
   const correlationId = getCorrelationId(req)
+  const env = getAuthEnv()
+  const shouldBypassSecurityThrottle =
+    env.NODE_ENV !== "production" && env.AUTH_DISABLE_RATE_LIMITS
 
   // Helper for structured logging of failures + abuse signal tracking
   const fail = async (reason: string, message: string) => {
@@ -24,7 +28,9 @@ export async function validateCsrf(req: Request): Promise<{ success: boolean; er
 
     // Rate Limit CSRF Failures (Abuse Signal)
     // If same IP triggers many failures, we throttle them here
-    await securityRateLimit.limit(`security_violation:${ip}`)
+    if (!shouldBypassSecurityThrottle) {
+      await securityRateLimit.limit(`security_violation:${ip}`)
+    }
 
     return { success: false, error: message }
   }
@@ -41,9 +47,11 @@ export async function validateCsrf(req: Request): Promise<{ success: boolean; er
   }
 
   // 1.2 Check if IP is already throttled due to security violations
-  const { success: abuseOk } = await securityRateLimit.limit(`security_check:${ip}`)
-  if (!abuseOk) {
-    return { success: false, error: "Too many security violations. IP temporarily throttled." }
+  if (!shouldBypassSecurityThrottle) {
+    const { success: abuseOk } = await securityRateLimit.limit(`security_check:${ip}`)
+    if (!abuseOk) {
+      return { success: false, error: "Too many security violations. IP temporarily throttled." }
+    }
   }
 
   // 2. Lock Header Presence Early + Normalize Case (subtle bug prevention)

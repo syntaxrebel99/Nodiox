@@ -4,6 +4,7 @@ import { hashIdentifier, redisClient } from "./rate-limit"
 import { securityLog } from "./security-log"
 import { withRetry } from "./reliability"
 import { normalizePhoneNumber } from "./phone-validation"
+import { getAuthEnv } from "./env"
 
 export type SmsOtpType = "login_mfa" | "signup"
 
@@ -29,8 +30,9 @@ function getSmsAttemptsKey(phone: string, type: SmsOtpType) {
 }
 
 function getOtpPepper() {
-  const pepper = process.env.OTP_PEPPER
-  if (process.env.NODE_ENV === "production" && (!pepper || pepper.length < 16)) {
+  const { NODE_ENV, OTP_PEPPER } = getAuthEnv()
+  const pepper = OTP_PEPPER
+  if (NODE_ENV === "production" && (!pepper || pepper.length < 16)) {
     throw new Error("Missing/weak OTP_PEPPER in production")
   }
 
@@ -45,9 +47,10 @@ function hashOtpV1(code: string, saltB64: string) {
 }
 
 function getInfobipConfig() {
-  const rawBaseUrl = process.env.INFOBIP_BASE_URL?.trim()
-  const apiKey = process.env.INFOBIP_API_KEY?.trim()
-  const sender = process.env.INFOBIP_SMS_SENDER?.trim()
+  const env = getAuthEnv()
+  const rawBaseUrl = env.INFOBIP_BASE_URL
+  const apiKey = env.INFOBIP_API_KEY
+  const sender = env.INFOBIP_SMS_SENDER
 
   if (!rawBaseUrl) {
     throw new Error("Missing INFOBIP_BASE_URL")
@@ -107,17 +110,16 @@ function getRequestErrorMessage(payload: unknown) {
 }
 
 export const SmsService = {
-  async sendOtp(phone: string, type: SmsOtpType, _locale: string = "en") {
+  async sendOtp(phone: string, type: SmsOtpType, locale: string = "en") {
     const normalizedPhone = normalizePhoneNumber(phone)
-    const code = crypto.randomInt(100000, 999999).toString()
+    const env = getAuthEnv()
+    const code = env.AUTH_MOCK_SMS_CODE ?? crypto.randomInt(100000, 999999).toString()
     const codeSalt = crypto.randomBytes(16).toString("base64url")
     const codeHash = hashOtpV1(code, codeSalt)
     const expiresAt = new Date(Date.now() + SMS_OTP_TTL_SECONDS * 1000).toISOString()
     const otpKey = getSmsOtpKey(normalizedPhone, type)
     const attemptsKey = getSmsAttemptsKey(normalizedPhone, type)
     const phoneHash = hashIdentifier("phone", normalizedPhone)
-
-    const { apiKey, baseUrl, sender } = getInfobipConfig()
 
     await redisClient.set(
       otpKey,
@@ -132,6 +134,19 @@ export const SmsService = {
       { ex: SMS_OTP_TTL_SECONDS }
     )
     await redisClient.del(attemptsKey)
+
+    if (env.AUTH_SMS_PROVIDER === "mock") {
+      console.info(`[SmsService][mock] ${type} OTP for ${normalizedPhone} (${locale}): ${code}`)
+      securityLog("info", "sms_otp_mocked", {
+        channel: "sms",
+        locale,
+        phoneHash,
+        type,
+      })
+      return { success: true }
+    }
+
+    const { apiKey, baseUrl, sender } = getInfobipConfig()
 
     const payload = {
       messages: [
@@ -185,6 +200,7 @@ export const SmsService = {
 
   async verifyOtp(phone: string, code: string, type: SmsOtpType) {
     const normalizedPhone = normalizePhoneNumber(phone)
+    const env = getAuthEnv()
     const otpKey = getSmsOtpKey(normalizedPhone, type)
     const attemptsKey = getSmsAttemptsKey(normalizedPhone, type)
     const phoneHash = hashIdentifier("phone", normalizedPhone)
@@ -203,6 +219,22 @@ export const SmsService = {
         reason: "too_many_attempts",
       })
       return { success: false, error: "Invalid or expired verification code" }
+    }
+
+    if (env.AUTH_SMS_PROVIDER === "mock" && env.AUTH_MOCK_SMS_CODE) {
+      if (!/^\d{6}$/.test(code) || code !== env.AUTH_MOCK_SMS_CODE) {
+        securityLog("warn", "otp_verification_failed", {
+          channel: "sms",
+          type,
+          phoneHash,
+          reason: "mock_code_mismatch",
+        })
+        return { success: false, error: "Invalid or expired verification code" }
+      }
+
+      await redisClient.del(otpKey)
+      await redisClient.del(attemptsKey)
+      return { success: true }
     }
 
     const rawOtp = await redisClient.get<string>(otpKey)

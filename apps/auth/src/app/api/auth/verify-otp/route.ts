@@ -19,8 +19,13 @@ import {
   SIGNUP_PHONE_VERIFICATION_COOKIE,
 } from "~/lib/signup-phone-verification"
 
-import { normalizeEmail } from "~/lib/normalize-email"
+import { normalizeEmail, sanitizeEmail } from "~/lib/normalize-email"
 import { normalizePhoneNumber, validatePhoneNumber } from "~/lib/phone-validation"
+
+interface SignupEmailVerificationRecord {
+  canonicalEmail: string
+  recipientEmail: string
+}
 
 const verifyOtpSchema = z.object({
   email: z.string().email().optional(),
@@ -54,7 +59,8 @@ export async function POST(req: Request) {
     }
 
     const { email: rawEmail, phone: rawPhone, token, type, flow } = result.data
-    const email = rawEmail ? normalizeEmail(rawEmail) : undefined
+    const recipientEmail = rawEmail ? sanitizeEmail(rawEmail) : undefined
+    const email = recipientEmail ? normalizeEmail(recipientEmail) : undefined
     const phone = rawPhone ? normalizePhoneNumber(rawPhone) : undefined
 
     // 2. Execute Tri-Layer Rate Limiting (IP + ID, Bounded Tarpit)
@@ -130,7 +136,14 @@ export async function POST(req: Request) {
         // Use an opaque, short-lived token (no PII in cookie). Email is stored server-side in Redis for 15m.
         const signupToken = crypto.randomUUID()
         const signupTokenHash = hashIdentifier("signup_token", signupToken)
-        await redisClient.set(`@nodiox/signup_token:${signupTokenHash}`, email, { ex: 60 * 15 })
+        await redisClient.set(
+          `@nodiox/signup_token:${signupTokenHash}`,
+          {
+            canonicalEmail: email,
+            recipientEmail: recipientEmail ?? email,
+          } satisfies SignupEmailVerificationRecord,
+          { ex: 60 * 15 }
+        )
 
         response.cookies.set("nodiox_signup_token", signupToken, {
           httpOnly: true,

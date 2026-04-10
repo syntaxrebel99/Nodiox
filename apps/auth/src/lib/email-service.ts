@@ -6,8 +6,9 @@ import { getTranslations } from "next-intl/server"
 import { redisClient, hashIdentifier } from "./rate-limit"
 import { securityLog } from "./security-log"
 import { withRetry } from "./reliability"
+import { getAuthEnv } from "./env"
 
-const resend = new Resend(process.env.RESEND_API_KEY)
+const resend = new Resend(getAuthEnv().RESEND_API_KEY)
 
 export type OtpType = "forgot_password" | "login_mfa" | "signup"
 
@@ -86,10 +87,11 @@ function applyLayout(title: string, content: string, locale: string, disclaimer:
 
 export const EmailService = {
   _getFromAddress(type: "default" | "security" = "default") {
-    const defaultEmail = process.env.RESEND_FROM_EMAIL?.trim()
-    const securityEmail = process.env.RESEND_SECURITY_FROM_EMAIL?.trim() || defaultEmail
+    const env = getAuthEnv()
+    const defaultEmail = env.RESEND_FROM_EMAIL
+    const securityEmail = env.RESEND_SECURITY_FROM_EMAIL || defaultEmail
 
-    if (process.env.NODE_ENV === "production" && !defaultEmail) {
+    if (env.NODE_ENV === "production" && !defaultEmail) {
       throw new Error("Missing RESEND_FROM_EMAIL in production")
     }
 
@@ -101,8 +103,9 @@ export const EmailService = {
   },
 
   _otpPepper() {
-    const pepper = process.env.OTP_PEPPER
-    if (process.env.NODE_ENV === "production" && (!pepper || pepper.length < 16)) {
+    const { NODE_ENV, OTP_PEPPER } = getAuthEnv()
+    const pepper = OTP_PEPPER
+    if (NODE_ENV === "production" && (!pepper || pepper.length < 16)) {
       throw new Error("Missing/weak OTP_PEPPER in production")
     }
     // Dev fallback to keep local environments functional.
@@ -126,9 +129,10 @@ export const EmailService = {
   },
 
   _getSiteUrl() {
-    const url = process.env.NEXT_PUBLIC_SITE_URL
+    const { NEXT_PUBLIC_SITE_URL, NODE_ENV } = getAuthEnv()
+    const url = NEXT_PUBLIC_SITE_URL
     if (!url) {
-      if (process.env.NODE_ENV === "production") {
+      if (NODE_ENV === "production") {
         throw new Error("Missing NEXT_PUBLIC_SITE_URL in production")
       }
       return "http://localhost:3000"
@@ -465,11 +469,17 @@ export const EmailService = {
   /**
    * Sends a welcome email after successful signup.
    */
-  async sendWelcomeEmail(email: string, fullName: string = 'User', locale: string = 'en') {
+  async sendWelcomeEmail(
+    email: string,
+    fullName: string = 'User',
+    locale: string = 'en',
+    options?: { recipientEmail?: string }
+  ) {
     try {
       const t = await getTranslations({ locale, namespace: 'Emails' })
       const firstName = (fullName || 'User').split(' ')[0]
       const siteUrl = EmailService._getSiteUrl()
+      const recipientEmail = options?.recipientEmail ?? email
       
       const hashedEmail = hashIdentifier("email", email)
       console.log(`[EmailService] Sending welcome email to [${hashedEmail}] (Locale: ${locale})`)
@@ -477,7 +487,7 @@ export const EmailService = {
       const { error: resendError } = await withRetry(async () => {
         return await resend.emails.send({
           from: EmailService._getFromAddress(),
-          to: email,
+          to: recipientEmail,
           subject: t('welcomeSubject', { firstName }),
           html: applyLayout(
             t('welcomeTitle', { firstName }), 

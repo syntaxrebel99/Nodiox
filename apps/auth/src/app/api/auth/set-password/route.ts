@@ -14,6 +14,11 @@ import {
 } from "~/lib/signup-phone-verification"
 import { normalizePhoneNumber, validatePhoneNumber } from "~/lib/phone-validation"
 
+interface SignupEmailVerificationRecord {
+  canonicalEmail: string
+  recipientEmail: string
+}
+
 const setPasswordSchema = z.object({
   password: z.string().min(8),
   fullName: z.string().min(2),
@@ -56,10 +61,46 @@ export async function POST(req: Request) {
     const signupToken = cookieStore.get("nodiox_signup_token")?.value
 
     const signupTokenHash = signupToken ? hashIdentifier("signup_token", signupToken) : null
-    const verifiedEmail =
+    const signupEmailRecordRaw =
       signupTokenHash
-        ? await redisClient.get<string>(`@nodiox/signup_token:${signupTokenHash}`)
+        ? await redisClient.get<SignupEmailVerificationRecord | string>(`@nodiox/signup_token:${signupTokenHash}`)
         : null
+
+    let verifiedEmail: string | null = null
+    let recipientEmail: string | null = null
+
+    if (
+      signupEmailRecordRaw &&
+      typeof signupEmailRecordRaw === "object" &&
+      !Array.isArray(signupEmailRecordRaw)
+    ) {
+      const parsed = signupEmailRecordRaw as Partial<SignupEmailVerificationRecord>
+      if (
+        typeof parsed.canonicalEmail === "string" &&
+        typeof parsed.recipientEmail === "string"
+      ) {
+        verifiedEmail = parsed.canonicalEmail
+        recipientEmail = parsed.recipientEmail
+      }
+    } else if (typeof signupEmailRecordRaw === "string") {
+      try {
+        const parsed = JSON.parse(signupEmailRecordRaw) as SignupEmailVerificationRecord
+        if (
+          typeof parsed.canonicalEmail === "string" &&
+          typeof parsed.recipientEmail === "string"
+        ) {
+          verifiedEmail = parsed.canonicalEmail
+          recipientEmail = parsed.recipientEmail
+        } else {
+          verifiedEmail = signupEmailRecordRaw
+          recipientEmail = signupEmailRecordRaw
+        }
+      } catch {
+        // Backward compatibility for previously stored string-only email tokens.
+        verifiedEmail = signupEmailRecordRaw
+        recipientEmail = signupEmailRecordRaw
+      }
+    }
 
     if (!verifiedEmail) {
       return NextResponse.json(
@@ -125,7 +166,9 @@ export async function POST(req: Request) {
     if (verifiedEmail) {
       after(async () => {
         try {
-          await EmailService.sendWelcomeEmail(verifiedEmail, fullName, locale)
+          await EmailService.sendWelcomeEmail(verifiedEmail, fullName, locale, {
+            recipientEmail: recipientEmail ?? verifiedEmail,
+          })
         } catch (err) {
           // Failure here doesn't block the response, but we log it.
           console.error("[After] Failed to send welcome email:", err)
