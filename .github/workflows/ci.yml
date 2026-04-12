@@ -6,6 +6,25 @@ on:
   pull_request:
     branches: [ "main", "develop" ]
 
+permissions:
+  contents: read
+
+env:
+  NEXT_PUBLIC_SITE_URL: "http://localhost:3001"
+  NEXT_PUBLIC_DASHBOARD_URL: "http://localhost:3002"
+  NEXT_PUBLIC_SUPABASE_URL: "https://example.supabase.co"
+  NEXT_PUBLIC_SUPABASE_ANON_KEY: "test-anon-key"
+  SUPABASE_SERVICE_ROLE_KEY: "test-service-role-key"
+  UPSTASH_REDIS_REST_URL: "https://example.upstash.io"
+  UPSTASH_REDIS_REST_TOKEN: "test-upstash-token"
+  RESEND_API_KEY: "test-resend-key"
+  RESEND_FROM_EMAIL: "no-reply@example.com"
+  RESEND_SECURITY_FROM_EMAIL: "security@example.com"
+  OTP_PEPPER: "test-otp-pepper-1234567890"
+  AUTH_SMS_PROVIDER: "mock"
+  AUTH_MOCK_SMS_CODE: "123456"
+  AUTH_DISABLE_RATE_LIMITS: "true"
+
 jobs:
   quality-checks:
     name: Lint & Type Check
@@ -23,7 +42,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-code: 20
+          node-version: 20
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -35,17 +54,10 @@ jobs:
       - name: Type Check
         run: pnpm run type-check
 
-  build:
-    name: Build Application
+  auth-tests:
+    name: Auth API & E2E Tests
     runs-on: ubuntu-latest
     needs: quality-checks
-    env:
-      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
-      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
-      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-      DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
-      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
 
     steps:
       - name: Checkout Code
@@ -59,7 +71,51 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-code: 20
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright Browsers
+        run: pnpm --filter auth exec playwright install --with-deps chromium
+
+      - name: Run Auth API Tests
+        run: pnpm --filter auth test:api
+
+      - name: Run Auth E2E Tests
+        run: pnpm --filter auth test:e2e
+
+      - name: Upload Playwright Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: auth-playwright-artifacts
+          path: |
+            apps/auth/playwright-report
+            apps/auth/test-results
+          if-no-files-found: ignore
+
+  build:
+    name: Build Application
+    runs-on: ubuntu-latest
+    needs:
+      - quality-checks
+      - auth-tests
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
           cache: 'pnpm'
 
       - name: Install dependencies
