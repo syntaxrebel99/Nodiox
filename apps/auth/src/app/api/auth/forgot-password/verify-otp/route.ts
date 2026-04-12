@@ -6,6 +6,7 @@ import { enforceAuthRateLimits, otpVerifyLimiters } from "~/lib/rate-limit"
 import { z } from "zod"
 import { validateCsrf } from "~/lib/csrf"
 import { respondError } from "~/lib/security-response"
+import { normalizeEmail, sanitizeEmail } from "~/lib/normalize-email"
 
 const RESET_COOKIE = "nodiox_reset_token"
 
@@ -33,7 +34,9 @@ export async function POST(req: Request) {
       )
     }
 
-    const { email, token } = result.data
+    const { email: rawEmail, token } = result.data
+    const recipientEmail = sanitizeEmail(rawEmail)
+    const email = normalizeEmail(recipientEmail)
 
     // 2. Execute Tri-Layer Rate Limiting (IP + ID, Bounded Tarpit)
     try {

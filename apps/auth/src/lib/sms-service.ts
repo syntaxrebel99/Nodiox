@@ -237,8 +237,8 @@ export const SmsService = {
       return { success: true }
     }
 
-    const rawOtp = await redisClient.get<string>(otpKey)
-    if (typeof rawOtp !== "string") {
+    const rawOtp = await redisClient.get<string | StoredSmsOtp>(otpKey)
+    if (!rawOtp) {
       securityLog("warn", "otp_verification_failed", {
         channel: "sms",
         type,
@@ -249,11 +249,15 @@ export const SmsService = {
     }
 
     let storedOtp: StoredSmsOtp
-    try {
-      storedOtp = JSON.parse(rawOtp) as StoredSmsOtp
-    } catch {
-      await redisClient.del(otpKey)
-      return { success: false, error: "Invalid or expired verification code" }
+    if (typeof rawOtp === "string") {
+      try {
+        storedOtp = JSON.parse(rawOtp) as StoredSmsOtp
+      } catch {
+        await redisClient.del(otpKey)
+        return { success: false, error: "Invalid or expired verification code" }
+      }
+    } else {
+      storedOtp = rawOtp
     }
 
     if (new Date(storedOtp.expiresAt) < new Date()) {
