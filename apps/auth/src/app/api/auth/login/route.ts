@@ -16,6 +16,7 @@ import {
 
 import { normalizeEmail, sanitizeEmail } from "~/lib/normalize-email"
 import { normalizePhoneNumber, validatePhoneNumber } from "~/lib/phone-validation"
+import { findAuthUserByPhone } from "~/lib/auth-user-lookup"
 
 const emptyStringToUndefined = (value: unknown) => {
   if (typeof value === "string" && value.trim() === "") {
@@ -78,10 +79,34 @@ export async function POST(req: Request) {
     const authClient = createStatelessClient()
     const locale = cookieStore.get("NEXT_LOCALE")?.value || "en"
 
+    let resolvedEmail = email
+
+    if (!resolvedEmail && phone) {
+      // Nodiox verifies phones with Infobip directly, so the underlying
+      // Supabase password identity is still the user's email-based account.
+      const authUser = await findAuthUserByPhone(phone)
+      if (!authUser?.email) {
+        return NextResponse.json(
+          { error: "Invalid credentials" },
+          { status: 401 }
+        )
+      }
+
+      resolvedEmail = normalizeEmail(authUser.email)
+    }
+
+    if (!resolvedEmail) {
+      return NextResponse.json(
+        { error: "Invalid credentials" },
+        { status: 401 }
+      )
+    }
+
     // 3. Verify credentials without issuing the final session yet.
-    const { data: signInData, error: signInError } = email
-      ? await authClient.auth.signInWithPassword({ email, password })
-      : await authClient.auth.signInWithPassword({ phone: phone!, password })
+    const { data: signInData, error: signInError } = await authClient.auth.signInWithPassword({
+      email: resolvedEmail,
+      password,
+    })
 
     if (signInError) {
       return NextResponse.json(
@@ -108,7 +133,7 @@ export async function POST(req: Request) {
       const challengeToken = await issuePendingLoginChallenge({
         method: email ? "email" : "phone",
         accessToken: signInData.session?.access_token,
-        email: email ?? signInData.user?.email ?? undefined,
+        email: resolvedEmail ?? signInData.user?.email ?? undefined,
         phone,
         refreshToken: signInData.session?.refresh_token,
       })
