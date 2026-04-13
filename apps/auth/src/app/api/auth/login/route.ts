@@ -17,11 +17,22 @@ import {
 import { normalizeEmail, sanitizeEmail } from "~/lib/normalize-email"
 import { normalizePhoneNumber, validatePhoneNumber } from "~/lib/phone-validation"
 
+const emptyStringToUndefined = (value: unknown) => {
+  if (typeof value === "string" && value.trim() === "") {
+    return undefined
+  }
+
+  return value
+}
+
 const loginSchema = z.object({
-  email: z.string().email().optional(),
-  phone: z.string().refine((value) => validatePhoneNumber(value, "DZ"), {
-    message: "Invalid phone number",
-  }).optional(),
+  email: z.preprocess(emptyStringToUndefined, z.string().email().optional()),
+  phone: z.preprocess(
+    emptyStringToUndefined,
+    z.string().refine((value) => validatePhoneNumber(value, "DZ"), {
+      message: "Invalid phone number",
+    }).optional()
+  ),
   password: z.string().min(1),
 }).refine(data => data.email || data.phone, {
   message: "Either email or phone is required",

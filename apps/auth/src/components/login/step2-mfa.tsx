@@ -24,6 +24,7 @@ export function Step2Mfa({ onBack, onSuccess }: Step2MfaProps) {
   const t = useTranslations("MFA")
   const [isLoading, setIsLoading] = useState(false)
   const { watch } = useFormContext<LoginData>()
+  const loginMethod = watch("loginMethod")
   const email = watch("email")
   const phoneNumber = watch("phoneNumber")
 
@@ -33,13 +34,18 @@ export function Step2Mfa({ onBack, onSuccess }: Step2MfaProps) {
     setIsLoading(true)
     setOtpError(null)
     try {
+      const isPhoneLogin = loginMethod === "phone"
       const body: Record<string, string> = {
         token: otpStr,
-        type: phoneNumber ? "sms" : "email",
+        type: isPhoneLogin ? "sms" : "email",
         flow: "login",
       }
-      if (email) body.email = email
-      if (phoneNumber) body.phone = phoneNumber
+      if (isPhoneLogin && phoneNumber) {
+        body.phone = phoneNumber
+      }
+      if (!isPhoneLogin && email) {
+        body.email = email
+      }
 
       const res = await apiFetch("/api/auth/verify-otp", {
         method: "POST",
@@ -76,9 +82,14 @@ export function Step2Mfa({ onBack, onSuccess }: Step2MfaProps) {
     onComplete: verifyOtpWrapper,
     onResend: async () => {
       try {
+        const isPhoneLogin = loginMethod === "phone"
         const body: Record<string, string> = { password: watch("password") }
-        if (email) body.email = email
-        if (phoneNumber) body.phone = phoneNumber
+        if (isPhoneLogin && phoneNumber) {
+          body.phone = phoneNumber
+        }
+        if (!isPhoneLogin && email) {
+          body.email = email
+        }
 
         const res = await apiFetch("/api/auth/login", {
           method: "POST",

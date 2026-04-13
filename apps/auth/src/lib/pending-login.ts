@@ -47,14 +47,17 @@ export async function issuePendingLoginChallenge(
 }
 
 export async function getPendingLoginChallenge(token: string) {
-  const rawChallenge = await redisClient.get<string>(getChallengeKey(token))
+  const rawChallenge = await redisClient.get<string | PendingLoginChallenge>(getChallengeKey(token))
 
-  if (typeof rawChallenge !== "string") {
+  if (!rawChallenge) {
     return null
   }
 
   try {
-    const parsed = JSON.parse(rawChallenge) as PendingLoginChallenge
+    const parsed =
+      typeof rawChallenge === "string"
+        ? (JSON.parse(rawChallenge) as PendingLoginChallenge)
+        : rawChallenge
 
     if (parsed.method !== "email" && parsed.method !== "phone") {
       return null

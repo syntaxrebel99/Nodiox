@@ -77,13 +77,20 @@ export function LoginForm({
       setIsLoading(true)
       setServerError(null)
       try {
+        const payload =
+          data.loginMethod === "email"
+            ? {
+                email: data.email?.trim() || undefined,
+                password: data.password,
+              }
+            : {
+                phone: data.phoneNumber?.trim() || undefined,
+                password: data.password,
+              }
+
         const res = await apiFetch("/api/auth/login", {
           method: "POST",
-          body: JSON.stringify({
-            email: data.email,
-            phone: data.phoneNumber,
-            password: data.password,
-          }),
+          body: JSON.stringify(payload),
         })
         const respData = await res.json()
         if (!res.ok) throw new Error(respData.error || "Login failed")

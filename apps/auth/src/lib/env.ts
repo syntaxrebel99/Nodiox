@@ -10,6 +10,13 @@ const envSchema = z.object({
   RESEND_API_KEY: z.string().min(1, "RESEND_API_KEY is required"),
   RESEND_FROM_EMAIL: z.string().trim().optional(),
   RESEND_SECURITY_FROM_EMAIL: z.string().trim().optional(),
+  SENTRY_DSN: z.string().trim().optional(),
+  NEXT_PUBLIC_SENTRY_DSN: z.string().trim().optional(),
+  SENTRY_ENVIRONMENT: z.string().trim().optional(),
+  NEXT_PUBLIC_SENTRY_ENVIRONMENT: z.string().trim().optional(),
+  SENTRY_AUTH_TOKEN: z.string().trim().optional(),
+  SENTRY_ORG: z.string().trim().optional(),
+  SENTRY_PROJECT: z.string().trim().optional(),
   NEXT_PUBLIC_SITE_URL: z.string().trim().optional(),
   NEXT_PUBLIC_DASHBOARD_URL: z.string().trim().optional(),
   INFOBIP_BASE_URL: z.string().trim().optional(),
@@ -32,6 +39,13 @@ export type AuthEnv = {
   RESEND_API_KEY: string
   RESEND_FROM_EMAIL?: string
   RESEND_SECURITY_FROM_EMAIL?: string
+  SENTRY_DSN?: string
+  NEXT_PUBLIC_SENTRY_DSN?: string
+  SENTRY_ENVIRONMENT?: string
+  NEXT_PUBLIC_SENTRY_ENVIRONMENT?: string
+  SENTRY_AUTH_TOKEN?: string
+  SENTRY_ORG?: string
+  SENTRY_PROJECT?: string
   NEXT_PUBLIC_SITE_URL?: string
   NEXT_PUBLIC_DASHBOARD_URL?: string
   INFOBIP_BASE_URL?: string
@@ -64,6 +78,13 @@ export function getAuthEnv(): AuthEnv {
     ...parsed.data,
     RESEND_FROM_EMAIL: parsed.data.RESEND_FROM_EMAIL || undefined,
     RESEND_SECURITY_FROM_EMAIL: parsed.data.RESEND_SECURITY_FROM_EMAIL || undefined,
+    SENTRY_DSN: parsed.data.SENTRY_DSN || undefined,
+    NEXT_PUBLIC_SENTRY_DSN: parsed.data.NEXT_PUBLIC_SENTRY_DSN || undefined,
+    SENTRY_ENVIRONMENT: parsed.data.SENTRY_ENVIRONMENT || undefined,
+    NEXT_PUBLIC_SENTRY_ENVIRONMENT: parsed.data.NEXT_PUBLIC_SENTRY_ENVIRONMENT || undefined,
+    SENTRY_AUTH_TOKEN: parsed.data.SENTRY_AUTH_TOKEN || undefined,
+    SENTRY_ORG: parsed.data.SENTRY_ORG || undefined,
+    SENTRY_PROJECT: parsed.data.SENTRY_PROJECT || undefined,
     NEXT_PUBLIC_SITE_URL: parsed.data.NEXT_PUBLIC_SITE_URL || undefined,
     NEXT_PUBLIC_DASHBOARD_URL: parsed.data.NEXT_PUBLIC_DASHBOARD_URL || undefined,
     INFOBIP_BASE_URL: parsed.data.INFOBIP_BASE_URL || undefined,
@@ -101,4 +122,3 @@ export function getAuthEnv(): AuthEnv {
   cachedEnv = env
   return env
 }
-

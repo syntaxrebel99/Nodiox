@@ -1,3 +1,5 @@
+import * as Sentry from "@sentry/nextjs"
+
 type SecurityLogLevel = "warn" | "error" | "info"
 
 export function getCorrelationId(req: Request): string {
@@ -25,5 +27,20 @@ export function securityLog(
   if (level === "error") console.error(msg)
   else if (level === "warn") console.warn(msg)
   else console.log(msg)
+
+  if (level === "info") {
+    return
+  }
+
+  Sentry.withScope((scope) => {
+    scope.setTag("category", "security")
+    scope.setTag("security.event", event)
+
+    for (const [key, value] of Object.entries(fields)) {
+      scope.setExtra(key, value)
+    }
+
+    Sentry.captureMessage(`security:${event}`, level === "error" ? "error" : "warning")
+  })
 }
 
