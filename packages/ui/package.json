@@ -31,6 +31,6 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "next": "16.2.1",
-    "typescript": "^5"
+    "typescript": "^6"
   }
 }
