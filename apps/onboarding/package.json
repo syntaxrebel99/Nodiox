@@ -14,7 +14,7 @@
     "@nodiox/i18n": "workspace:*",
     "@nodiox/ui": "workspace:*",
     "@nodiox/utils": "workspace:*",
-    "@supabase/ssr": "^0.10.0",
+    "@supabase/ssr": "^0.10.2",
     "@supabase/supabase-js": "^2.101.1",
     "canvas-confetti": "^1.9.4",
     "framer-motion": "^12.38.0",
