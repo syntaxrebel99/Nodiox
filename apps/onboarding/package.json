@@ -15,7 +15,7 @@
     "@nodiox/ui": "workspace:*",
     "@nodiox/utils": "workspace:*",
     "@supabase/ssr": "^0.10.0",
-    "@supabase/supabase-js": "^2.101.1",
+    "@supabase/supabase-js": "^2.105.3",
     "canvas-confetti": "^1.9.4",
     "framer-motion": "^12.38.0",
     "geist": "^1.7.0",
