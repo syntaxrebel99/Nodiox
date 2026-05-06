@@ -21,7 +21,7 @@
     "@nodiox/utils": "workspace:*",
     "@sentry/nextjs": "^10.48.0",
     "@supabase/ssr": "^0.10.0",
-    "@supabase/supabase-js": "^2.101.1",
+    "@supabase/supabase-js": "^2.105.3",
     "@types/canvas-confetti": "^1.9.0",
     "@upstash/ratelimit": "^2.0.8",
     "@upstash/redis": "^1.37.0",
