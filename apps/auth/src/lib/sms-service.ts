@@ -136,7 +136,12 @@ export const SmsService = {
     await redisClient.del(attemptsKey)
 
     if (env.AUTH_SMS_PROVIDER === "mock") {
-      console.info(`[SmsService][mock] ${type} OTP for ${normalizedPhone} (${locale}): ${code}`)
+      if (process.env.NODE_ENV !== "production") {
+        const maskedPhone = normalizedPhone.length > 6
+          ? `${normalizedPhone.slice(0, 4)}...${normalizedPhone.slice(-2)}`
+          : "[REDACTED]"
+        console.info(`[SmsService][mock] ${type} OTP for ${maskedPhone} (${locale}): ${code}`)
+      }
       securityLog("info", "sms_otp_mocked", {
         channel: "sms",
         locale,
@@ -184,12 +189,13 @@ export const SmsService = {
         }
       },
       {
-        onRetry: (error, attempt) => {
+        onRetry: (_error, attempt) => {
           securityLog("warn", "sms_send_retry", {
             attempt,
             phoneHash,
             type,
-            error: error instanceof Error ? error.message : String(error),
+            failureCode: "otp_send_failed",
+            provider: "infobip",
           })
         },
       }

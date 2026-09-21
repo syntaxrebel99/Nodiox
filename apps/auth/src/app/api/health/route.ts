@@ -49,7 +49,7 @@ export async function GET() {
     return NextResponse.json({
       status: "error",
       timestamp,
-      message: error instanceof Error ? error.message : "Unexpected failure"
+      message: "Health check failed"
     }, { status: 500 })
   }
 }

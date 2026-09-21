@@ -2,11 +2,13 @@ import { NextResponse } from "next/server"
 import { cookies } from "next/headers"
 import { EmailService } from "~/lib/email-service"
 import { createAdminClient } from "~/lib/supabase/admin"
-import { enforceAuthRateLimits, otpSendLimiters, otpSendCooldownLimit } from "~/lib/rate-limit"
+import { enforceAuthRateLimits, otpSendLimiters, otpSendCooldownLimit, hashIdentifier } from "~/lib/rate-limit"
 import { z } from "zod"
 import { validateCsrf } from "~/lib/csrf"
 import { respondError } from "~/lib/security-response"
 import { SmsService } from "~/lib/sms-service"
+import { logger } from "~/lib/logger"
+import { getAuthTestSimulation } from "~/lib/test-simulation"
 import { normalizePhoneNumber, validatePhoneNumber } from "~/lib/phone-validation"
 
 import { normalizeEmail, sanitizeEmail } from "~/lib/normalize-email"
@@ -25,7 +27,9 @@ export async function POST(req: Request) {
     // 0. CSRF Validation
     const csrfResult = await validateCsrf(req)
     if (!csrfResult.success) {
-      return NextResponse.json({ error: csrfResult.error }, { status: 403 })
+      return respondError(req, 403, csrfResult.error || "Forbidden", {
+        failureCode: "csrf_rejected",
+      })
     }
 
     // 1. Validate Request Body First (so we can get identifier for limits)
@@ -33,10 +37,9 @@ export async function POST(req: Request) {
     const result = sendOtpSchema.safeParse(body)
     
     if (!result.success) {
-      return NextResponse.json(
-        { error: "Invalid request format", details: result.error.issues },
-        { status: 400 }
-      )
+      return respondError(req, 400, "Invalid request format", {
+        failureCode: "validation_failed",
+      })
     }
 
     const { email: rawEmail, phone: rawPhone } = result.data
@@ -52,8 +55,19 @@ export async function POST(req: Request) {
         identifier: email || phone,
         namespace: "otp_send"
       });
-    } catch (e: any) {
-      return NextResponse.json({ error: e.message }, { status: 429 })
+    } catch {
+      return respondError(req, 429, "Too many attempts. Please try again later.", {
+        failureCode: "rate_limit_exceeded",
+      })
+    }
+
+    // Strictly gated simulation hooks for automated testing.
+    const simulation = getAuthTestSimulation(req)
+    if (simulation === "supabase-down") {
+      throw new Error("Supabase check_user_exists RPC failed at postgresql://postgres:pw@db.supabase.co:5432/main")
+    }
+    if (simulation === "notification-down") {
+      throw new Error("Resend API rejected delivery with api_key=re_123456789")
     }
 
     // 3. ACCOUNT ENUMERATION PROTECTION:
@@ -86,15 +100,18 @@ export async function POST(req: Request) {
       }
       
       return NextResponse.json({ success: true })
-    } catch (error: any) {
-      console.error("Signup OTP Send Error:", error)
-      return NextResponse.json(
-        { error: error.message || "Failed to send verification code" },
-        { status: 500 }
-      )
+    } catch (error: unknown) {
+      logger.error("signup_otp_send_failed", error)
+      return respondError(req, 500, "Failed to send verification code", {
+        failureCode: "otp_send_failed",
+        provider: email ? "resend" : "infobip",
+        identifierHash: email ? hashIdentifier("email", email) : phone ? hashIdentifier("phone", phone) : undefined,
+      })
     }
-  } catch (error: any) {
-    console.error("OTP Error:", error)
-    return respondError(req, 500, "An unexpected error occurred")
+  } catch (error: unknown) {
+    logger.error("signup_otp_unexpected_error", error)
+    return respondError(req, 500, "An unexpected error occurred", {
+      failureCode: "unexpected_error",
+    })
   }
 }

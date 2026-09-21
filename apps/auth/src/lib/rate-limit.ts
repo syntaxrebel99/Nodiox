@@ -3,6 +3,7 @@ import { Redis } from "@upstash/redis"
 import crypto from "crypto"
 import { getCorrelationId, securityLog } from "./security-log"
 import { getAuthEnv } from "./env"
+import { getAuthTestSimulation } from "./test-simulation"
 
 const authEnv = getAuthEnv()
 
@@ -148,6 +149,13 @@ export async function enforceAuthRateLimits(options: {
   namespace: string,
   tenantScope?: string,
 }) {
+  // Exercise the error-response path even when ordinary rate limits are
+  // disabled for tests. The helper requires a per-run secret and is inert in
+  // production deployments.
+  if (options.req && getAuthTestSimulation(options.req) === "redis-down") {
+    throw new Error("Upstash Redis connection timeout: connect ETIMEDOUT 10.0.0.1:6379 with token=test-upstash-token-123456")
+  }
+
   if (shouldBypassAuthRateLimits()) {
     return
   }

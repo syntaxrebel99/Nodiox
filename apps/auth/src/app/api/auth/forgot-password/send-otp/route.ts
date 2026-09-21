@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server"
 import { cookies } from "next/headers"
-import { enforceAuthRateLimits, otpSendLimiters, otpSendCooldownLimit } from "~/lib/rate-limit"
+import { enforceAuthRateLimits, otpSendLimiters, otpSendCooldownLimit, hashIdentifier } from "~/lib/rate-limit"
 import { EmailService } from "~/lib/email-service"
 import { createAdminClient } from "~/lib/supabase/admin"
 import { z } from "zod"
 import { validateCsrf } from "~/lib/csrf"
 import { respondError } from "~/lib/security-response"
+import { logger } from "~/lib/logger"
+import { getAuthTestSimulation } from "~/lib/test-simulation"
 
 import { normalizeEmail, sanitizeEmail } from "~/lib/normalize-email"
 
@@ -18,7 +20,9 @@ export async function POST(req: Request) {
     // 0. CSRF Validation
     const csrfResult = await validateCsrf(req)
     if (!csrfResult.success) {
-      return NextResponse.json({ error: csrfResult.error }, { status: 403 })
+      return respondError(req, 403, csrfResult.error || "Forbidden", {
+        failureCode: "csrf_rejected",
+      })
     }
 
     // 1. Validate Target First
@@ -26,10 +30,9 @@ export async function POST(req: Request) {
     const result = forgotPasswordSchema.safeParse(body)
     
     if (!result.success) {
-      return NextResponse.json(
-        { error: "Invalid request format", details: result.error.issues },
-        { status: 400 }
-      )
+      return respondError(req, 400, "Invalid request format", {
+        failureCode: "validation_failed",
+      })
     }
 
     const { email: rawEmail } = result.data
@@ -45,10 +48,20 @@ export async function POST(req: Request) {
         identifier: email,
         namespace: "otp_send"
       });
-    } catch (e: any) {
-      return NextResponse.json({ error: e.message }, { status: 429 })
+    } catch {
+      return respondError(req, 429, "Too many attempts. Please try again later.", {
+        failureCode: "rate_limit_exceeded",
+      })
     }
-    const ua = req.headers.get("user-agent") || undefined
+
+    // Strictly gated simulation hooks for automated testing.
+    const simulation = getAuthTestSimulation(req)
+    if (simulation === "supabase-down") {
+      throw new Error("Supabase check_user_exists RPC failed at postgresql://postgres:pw@db.supabase.co:5432/main")
+    }
+    if (simulation === "notification-down") {
+      throw new Error("Resend API rejected delivery with api_key=re_123456789")
+    }
 
     // 3. ACCOUNT ENUMERATION PROTECTION:
     // Check if the user actually exists in Supabase.
@@ -59,7 +72,7 @@ export async function POST(req: Request) {
     })
     
     if (rpcError) {
-      console.error("RPC Error checking user existence:", rpcError)
+      logger.error("forgot_otp_rpc_error", rpcError)
     }
 
     // 4. Get Locale from Cookie (NEXT_LOCALE)
@@ -75,7 +88,7 @@ export async function POST(req: Request) {
       } else {
         // Optional: Add a small artificial delay to match the timing of a real send
         await new Promise(resolve => setTimeout(resolve, Math.random() * 500 + 400))
-        console.log(`[Security] Ghost OTP request for non-existent account trace logged.`)
+        logger.info("ghost_otp_request_for_nonexistent_account", { emailHash: hashIdentifier("email", email) })
       }
       
       // Always return the exact same success message
@@ -83,15 +96,18 @@ export async function POST(req: Request) {
         success: true,
         message: "A verification code has been sent to your email."
       })
-    } catch (error: any) {
-      console.error("Forgot OTP Error:", error)
-      return NextResponse.json(
-        { error: error.message || "Failed to send verification code" },
-        { status: 500 }
-      )
+    } catch (error: unknown) {
+      logger.error("forgot_otp_send_failed", error)
+      return respondError(req, 500, "Failed to send verification code", {
+        failureCode: "otp_send_failed",
+        provider: "resend",
+        identifierHash: hashIdentifier("email", email),
+      })
     }
-  } catch (error: any) {
-    console.error("Forgot OTP Critical Error:", error)
-    return respondError(req, 500, "An unexpected error occurred")
+  } catch (error: unknown) {
+    logger.error("forgot_otp_critical_error", error)
+    return respondError(req, 500, "An unexpected error occurred", {
+      failureCode: "unexpected_error",
+    })
   }
 }

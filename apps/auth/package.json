@@ -10,7 +10,8 @@
     "start": "next start --port 3001",
     "lint": "eslint",
     "type-check": "tsc --noEmit",
-    "test": "pnpm run test:api",
+    "test": "pnpm run test:unit && pnpm run test:api",
+    "test:unit": "node --experimental-strip-types --test ./src/__tests__/unit/redaction.test.ts",
     "test:api": "node ./scripts/run-api-tests.mjs",
     "test:e2e": "playwright test"
   },
@@ -29,10 +30,10 @@
     "framer-motion": "^12.38.0",
     "geist": "^1.7.0",
     "lucide-react": "1.7.0",
-    "next": "16.2.1",
-    "next-intl": "^4.8.3",
-    "react": "19.2.4",
-    "react-dom": "19.2.4",
+    "next": "16.3.5",
+    "next-intl": "^4.14.5",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
     "react-hook-form": "^7.72.0",
     "resend": "^6.10.0",
     "zod": "^4.3.6"
@@ -44,6 +45,7 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "eslint": "^9.39.4",
     "tailwindcss": "^4",
     "typescript": "^5"
   }

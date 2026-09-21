@@ -7,7 +7,9 @@ import { z } from "zod"
 import { validateCsrf, rotateCsrfToken } from "~/lib/csrf"
 import { validatePasswordPolicy } from "~/lib/password-policy"
 import { redisClient, hashIdentifier } from "~/lib/rate-limit"
-import { respondError } from "~/lib/security-response"
+import { respondError, mapAuthErrorCode, normalizeFailureCode } from "~/lib/security-response"
+import { logger } from "~/lib/logger"
+import { getAuthTestSimulation } from "~/lib/test-simulation"
 import {
   consumeVerifiedSignupPhone,
   SIGNUP_PHONE_VERIFICATION_COOKIE,
@@ -32,17 +34,18 @@ export async function POST(req: Request) {
     // 0. CSRF Validation
     const csrfResult = await validateCsrf(req)
     if (!csrfResult.success) {
-      return NextResponse.json({ error: csrfResult.error }, { status: 403 })
+      return respondError(req, 403, csrfResult.error || "Forbidden", {
+        failureCode: "csrf_rejected",
+      })
     }
 
     const body = await req.json()
     const result = setPasswordSchema.safeParse(body)
     
     if (!result.success) {
-      return NextResponse.json(
-        { error: "Invalid request format", details: result.error.issues },
-        { status: 400 }
-      )
+      return respondError(req, 400, "Invalid request format", {
+        failureCode: "validation_failed",
+      })
     }
 
     const { password, fullName, phone: rawPhone } = result.data
@@ -50,10 +53,14 @@ export async function POST(req: Request) {
 
     const policy = validatePasswordPolicy(password)
     if (!policy.ok) {
-      return NextResponse.json(
-        { error: "Password does not meet security requirements", code: policy.error },
-        { status: 400 }
-      )
+      return respondError(req, 400, "Password does not meet security requirements", {
+        failureCode: "weak_password",
+      })
+    }
+
+    // Strictly gated simulation hooks for automated testing.
+    if (getAuthTestSimulation(req) === "supabase-down") {
+      throw new Error("Supabase admin.createUser failed at postgresql://postgres:pw@db.supabase.co:5432/main")
     }
 
     // 1. Check for the Secure Signup Verification Cookie (opaque token)
@@ -103,10 +110,7 @@ export async function POST(req: Request) {
     }
 
     if (!verifiedEmail) {
-      return NextResponse.json(
-        { error: "Email verification expired or not found. Please restart signup." },
-        { status: 401 }
-      )
+      return respondError(req, 401, "Email verification expired or not found. Please restart signup.")
     }
 
     let verifiedPhone: string | null = null
@@ -117,10 +121,7 @@ export async function POST(req: Request) {
         : null
 
       if (!verifiedPhone || verifiedPhone !== phone) {
-        return NextResponse.json(
-          { error: "Phone verification expired or not found. Please restart signup." },
-          { status: 401 }
-        )
+        return respondError(req, 401, "Phone verification expired or not found. Please restart signup.")
       }
     }
 
@@ -142,13 +143,13 @@ export async function POST(req: Request) {
     })
 
     if (createError) {
-      // If user already exists, we might want to handle it differently, 
-      // but for signup, we assume they should be new.
-      console.error("Signup Create Error:", createError)
-      return NextResponse.json(
-        { error: createError.message },
-        { status: 400 }
-      )
+      logger.error("signup_create_failed", createError)
+      const publicError = mapAuthErrorCode((createError as any).code, createError.message)
+      return respondError(req, 400, publicError, {
+        failureCode: normalizeFailureCode((createError as any).code, createError.message),
+        provider: "supabase",
+        identifierHash: verifiedEmail ? hashIdentifier("email", verifiedEmail) : undefined,
+      })
     }
 
     // 3. Clear the signup verification cookie + redis token
@@ -170,8 +171,8 @@ export async function POST(req: Request) {
             recipientEmail: recipientEmail ?? verifiedEmail,
           })
         } catch (err) {
-          // Failure here doesn't block the response, but we log it.
-          console.error("[After] Failed to send welcome email:", err)
+          // Failure here doesn't block the response, but we log it via structured logger.
+          logger.error("signup_welcome_email_failed", err)
         }
       })
     }
@@ -194,8 +195,10 @@ export async function POST(req: Request) {
     await rotateCsrfToken()
 
     return response
-  } catch (error: any) {
-    console.error("Set Password Error:", error)
-    return respondError(req, 500, "An unexpected error occurred")
+  } catch (error: unknown) {
+    logger.error("set_password_error", error)
+    return respondError(req, 500, "An unexpected error occurred", {
+      failureCode: "unexpected_error",
+    })
   }
 }

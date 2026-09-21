@@ -1,6 +1,7 @@
 /* global AbortSignal, console, fetch, process, setTimeout */
 
 import { spawn } from "node:child_process"
+import { randomBytes } from "node:crypto"
 import { readdir } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -11,6 +12,7 @@ const projectRoot = resolve(__dirname, "..")
 const apiTestsDir = join(projectRoot, "src", "__tests__", "api")
 const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3001"
 const readinessPath = `${baseUrl}/en/login`
+const testSimulationSecret = randomBytes(32).toString("hex")
 
 function getPnpmInvocation(args) {
   if (process.platform === "win32") {
@@ -137,6 +139,8 @@ async function main() {
     env: {
       ...process.env,
       NEXT_TELEMETRY_DISABLED: "1",
+      AUTH_TEST_SIMULATION: "1",
+      AUTH_TEST_SIMULATION_SECRET: testSimulationSecret,
     },
   })
 
@@ -147,6 +151,7 @@ async function main() {
       env: {
         ...process.env,
         NEXT_PUBLIC_SITE_URL: baseUrl,
+        AUTH_TEST_SIMULATION_SECRET: testSimulationSecret,
       },
     })
   } finally {

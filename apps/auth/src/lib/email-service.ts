@@ -7,6 +7,7 @@ import { redisClient, hashIdentifier } from "./rate-limit"
 import { securityLog } from "./security-log"
 import { withRetry } from "./reliability"
 import { getAuthEnv } from "./env"
+import { logger } from "./logger.ts"
 
 const resend = new Resend(getAuthEnv().RESEND_API_KEY)
 
@@ -188,13 +189,13 @@ export const EmailService = {
         })
 
       if (dbError) {
-        console.error("[EmailService] DB Error storing OTP:", dbError)
+        logger.error("email_otp_db_store_failed", dbError)
         throw new Error("Failed to generate verification code")
       }
 
       // 5. Send via Resend with Retry
       const hashedEmail = hashIdentifier("email", email)
-      console.log(`[EmailService] Sending OTP to [${hashedEmail}] (Type: ${type}, Locale: ${locale})`)
+      logger.info("email_otp_send_initiated", { emailHash: hashedEmail, type, locale })
       
       const { error: resendError } = await withRetry(async () => {
         return await resend.emails.send({
@@ -219,25 +220,26 @@ export const EmailService = {
           ),
         })
       }, {
-        onRetry: (err, attempt) => {
+        onRetry: (_err, attempt) => {
           securityLog("warn", "email_send_retry", {
             attempt,
             emailHash: hashedEmail,
             type: "otp",
-            error: err.message
+            failureCode: "otp_send_failed",
+            provider: "resend",
           })
         }
       })
 
       if (resendError) {
-        console.error(`[EmailService] Resend Error (OTP):`, resendError)
+        logger.error("email_otp_resend_error", resendError)
         throw resendError
       }
 
-      console.log(`[EmailService] OTP sent successfully to ${hashedEmail}`)
+      logger.info("email_otp_send_success", { emailHash: hashedEmail })
       return { success: true }
     } catch (error) {
-      console.error(`[EmailService] Failed to send OTP to ${email}:`, error)
+      logger.error("email_otp_send_failed", error, { emailHash: hashIdentifier("email", email) })
       throw error
     }
   },
@@ -358,7 +360,7 @@ export const EmailService = {
     try {
       const t = await getTranslations({ locale, namespace: 'Emails' })
       const hashedEmail = hashIdentifier("email", email)
-      console.log(`[EmailService] Sending password changed alert to [${hashedEmail}] (Locale: ${locale})`)
+      logger.info("email_password_alert_initiated", { emailHash: hashedEmail, locale })
 
       const { error: resendError } = await withRetry(async () => {
         return await resend.emails.send({
@@ -385,23 +387,24 @@ export const EmailService = {
           ),
         })
       }, {
-        onRetry: (err, attempt) => {
+        onRetry: (_err, attempt) => {
           securityLog("warn", "email_send_retry", {
             attempt,
             emailHash: hashedEmail,
             type: "password_alert",
-            error: err.message
+            failureCode: "provider_unavailable",
+            provider: "resend",
           })
         }
       })
 
       if (resendError) {
-        console.error(`[EmailService] Resend Error (Password Alert):`, resendError)
+        logger.error("email_password_alert_resend_error", resendError)
         throw resendError
       }
-      console.log(`[EmailService] Password changed alert sent to ${hashedEmail}`)
+      logger.info("email_password_alert_sent", { emailHash: hashedEmail })
     } catch (error) {
-      console.error(`[EmailService] Failed to send password changed alert to ${email}:`, error)
+      logger.error("email_password_alert_failed", error, { emailHash: hashIdentifier("email", email) })
       throw error
     }
   },
@@ -419,7 +422,7 @@ export const EmailService = {
       const hashedEmail = hashIdentifier("email", email)
       const siteUrl = EmailService._getSiteUrl()
       const recipientEmail = options?.recipientEmail ?? email
-      console.log(`[EmailService] Sending signup attempt alert to [${hashedEmail}] (Locale: ${locale})`)
+      logger.info("email_signup_attempt_alert_initiated", { emailHash: hashedEmail, locale })
 
       const { error: resendError } = await withRetry(async () => {
         return await resend.emails.send({
@@ -445,23 +448,24 @@ export const EmailService = {
           ),
         })
       }, {
-        onRetry: (err, attempt) => {
+        onRetry: (_err, attempt) => {
           securityLog("warn", "email_send_retry", {
             attempt,
             emailHash: hashedEmail,
             type: "signup_alert",
-            error: err.message
+            failureCode: "provider_unavailable",
+            provider: "resend",
           })
         }
       })
 
       if (resendError) {
-        console.error(`[EmailService] Resend Error (Signup Attempt):`, resendError)
+        logger.error("email_signup_attempt_resend_error", resendError)
         throw resendError
       }
-      console.log(`[EmailService] Signup attempt alert sent to ${hashedEmail}`)
+      logger.info("email_signup_attempt_sent", { emailHash: hashedEmail })
     } catch (error) {
-      console.error(`[EmailService] Failed to send signup attempt alert to ${email}:`, error)
+      logger.error("email_signup_attempt_failed", error, { emailHash: hashIdentifier("email", email) })
       throw error
     }
   },
@@ -482,7 +486,7 @@ export const EmailService = {
       const recipientEmail = options?.recipientEmail ?? email
       
       const hashedEmail = hashIdentifier("email", email)
-      console.log(`[EmailService] Sending welcome email to [${hashedEmail}] (Locale: ${locale})`)
+      logger.info("email_welcome_initiated", { emailHash: hashedEmail, locale })
 
       const { error: resendError } = await withRetry(async () => {
         return await resend.emails.send({
@@ -506,23 +510,24 @@ export const EmailService = {
           ),
         })
       }, {
-        onRetry: (err, attempt) => {
+        onRetry: (_err, attempt) => {
           securityLog("warn", "email_send_retry", {
             attempt,
             emailHash: hashedEmail,
             type: "welcome",
-            error: err.message
+            failureCode: "provider_unavailable",
+            provider: "resend",
           })
         }
       })
 
       if (resendError) {
-        console.error(`[EmailService] Resend Error (Welcome):`, resendError)
+        logger.error("email_welcome_resend_error", resendError)
         throw resendError
       }
-      console.log(`[EmailService] Welcome email sent successfully to ${hashedEmail}`)
+      logger.info("email_welcome_sent", { emailHash: hashedEmail })
     } catch (error) {
-      console.error(`[EmailService] Failed to send welcome email to ${email}:`, error)
+      logger.error("email_welcome_failed", error, { emailHash: hashIdentifier("email", email) })
       throw error
     }
   }

@@ -8,6 +8,8 @@ import { validateCsrf, rotateCsrfToken } from "~/lib/csrf"
 import { redisClient, hashIdentifier } from "~/lib/rate-limit"
 import { respondError } from "~/lib/security-response"
 import { SmsService } from "~/lib/sms-service"
+import { logger } from "~/lib/logger"
+import { getAuthTestSimulation } from "~/lib/test-simulation"
 import {
   consumePendingLoginChallenge,
   getPendingLoginChallenge,
@@ -44,7 +46,7 @@ export async function POST(req: Request) {
     // 0. CSRF Validation
     const csrfResult = await validateCsrf(req)
     if (!csrfResult.success) {
-      return NextResponse.json({ error: csrfResult.error }, { status: 403 })
+      return respondError(req, 403, csrfResult.error || "Forbidden")
     }
 
     // 1. Validate Body First (so we can extract identifiers for limits)
@@ -52,10 +54,7 @@ export async function POST(req: Request) {
     const result = verifyOtpSchema.safeParse(body)
     
     if (!result.success) {
-      return NextResponse.json(
-        { error: "Invalid request format", details: result.error.issues },
-        { status: 400 }
-      )
+      return respondError(req, 400, "Invalid request format")
     }
 
     const { email: rawEmail, phone: rawPhone, token, type, flow } = result.data
@@ -71,8 +70,15 @@ export async function POST(req: Request) {
         identifier: email || phone,
         namespace: "otp_verify"
       });
-    } catch (e: any) {
-      return NextResponse.json({ error: e.message }, { status: 429 })
+    } catch {
+      return respondError(req, 429, "Too many attempts. Please try again later.", {
+        failureCode: "rate_limit_exceeded",
+      })
+    }
+
+    // Strictly gated simulation hooks for automated testing.
+    if (getAuthTestSimulation(req) === "supabase-down") {
+      throw new Error("Supabase auth.setSession failed at postgresql://postgres:pw@db.supabase.co:5432/main")
     }
 
     const cookieStore = await cookies()
@@ -95,7 +101,10 @@ export async function POST(req: Request) {
       })
 
       if (sessionError) {
-        return { error: sessionError.message, user: null }
+        return {
+          error: "Failed to establish secure session. Please try again.",
+          user: null,
+        }
       }
 
       return { error: null, user: sessionData.user }
@@ -103,7 +112,7 @@ export async function POST(req: Request) {
 
     // 4. Handle Email OTP (Resend Engine)
     if (type === "email" || type === "signup") {
-      if (!email) return NextResponse.json({ error: "Email is required" }, { status: 400 })
+      if (!email) return respondError(req, 400, "Email is required")
 
       if (
         type === "email" &&
@@ -111,9 +120,10 @@ export async function POST(req: Request) {
           pendingLogin.method !== "email" ||
           pendingLogin.email !== email)
       ) {
-        return NextResponse.json(
-          { error: "Your login verification session has expired. Please log in again." },
-          { status: 401 }
+        return respondError(
+          req,
+          401,
+          "Your login verification session has expired. Please log in again."
         )
       }
 
@@ -122,9 +132,10 @@ export async function POST(req: Request) {
       const { success: isVerified, error: verifyError } = await EmailService.verifyOtp(email, token, otpType)
 
       if (!isVerified) {
-        return NextResponse.json(
-          { error: verifyError || "Invalid or expired verification code" },
-          { status: 401 }
+        return respondError(
+          req,
+          401,
+          verifyError || "Invalid or expired verification code"
         )
       }
 
@@ -163,7 +174,10 @@ export async function POST(req: Request) {
       // c) For Login MFA -> restore the pending password-authenticated session
       const { error: sessionError, user } = await establishSessionFromPendingLogin()
       if (sessionError || !user) {
-        return NextResponse.json({ error: sessionError || "Failed to establish secure session. Please try again." }, { status: 500 })
+        return respondError(req, 500, "Failed to establish secure session. Please try again.", {
+          failureCode: "mfa_session_failed",
+          provider: "supabase",
+        })
       }
 
       // CSRF Token Rotation on successful MFA login
@@ -184,22 +198,26 @@ export async function POST(req: Request) {
         pendingLogin.method !== "phone" ||
         pendingLogin.phone !== phone)
     ) {
-      return NextResponse.json(
-        { error: "Your login verification session has expired. Please log in again." },
-        { status: 401 }
+      return respondError(
+        req,
+        401,
+        "Your login verification session has expired. Please log in again.",
+        { failureCode: "session_expired" }
       )
     }
 
     if (!phone) {
-      return NextResponse.json({ error: "Phone is required" }, { status: 400 })
+      return respondError(req, 400, "Phone is required", { failureCode: "validation_failed" })
     }
 
     if (flow === "signup") {
       const { success: isVerified, error: verifyError } = await SmsService.verifyOtp(phone, token, "signup")
       if (!isVerified) {
-        return NextResponse.json(
-          { error: verifyError || "Invalid or expired verification code" },
-          { status: 401 }
+        return respondError(
+          req,
+          401,
+          verifyError || "Invalid or expired verification code",
+          { failureCode: "otp_invalid", provider: "infobip" }
         )
       }
 
@@ -216,23 +234,25 @@ export async function POST(req: Request) {
     }
 
     if (flow !== "login") {
-      return NextResponse.json({ error: "Phone verification flow is required" }, { status: 400 })
+      return respondError(req, 400, "Phone verification flow is required", { failureCode: "validation_failed" })
     }
 
     const { success: isVerified, error: verifyError } = await SmsService.verifyOtp(phone, token, "login_mfa")
     if (!isVerified) {
-      return NextResponse.json(
-        { error: verifyError || "Invalid or expired verification code" },
-        { status: 401 }
+      return respondError(
+        req,
+        401,
+        verifyError || "Invalid or expired verification code",
+        { failureCode: "otp_invalid", provider: "infobip" }
       )
     }
 
     const { error: sessionError, user } = await establishSessionFromPendingLogin()
     if (sessionError || !user) {
-      return NextResponse.json(
-        { error: sessionError || "Failed to establish secure session. Please try again." },
-        { status: 500 }
-      )
+      return respondError(req, 500, "Failed to establish secure session. Please try again.", {
+        failureCode: "mfa_session_failed",
+        provider: "supabase",
+      })
     }
 
     // CSRF Token Rotation on successful OTP verification (Phone flow)
@@ -246,7 +266,9 @@ export async function POST(req: Request) {
     response.headers.set("x-csrf-token", newCsrf)
     return response
   } catch (error: unknown) {
-    console.error("Verify OTP Error:", error)
-    return respondError(req, 500, "An unexpected error occurred")
+    logger.error("verify_otp_error", error)
+    return respondError(req, 500, "An unexpected error occurred", {
+      failureCode: "unexpected_error",
+    })
   }
 }

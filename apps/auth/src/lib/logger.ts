@@ -1,3 +1,5 @@
+import { redactLogPayload } from "./log-redaction.ts"
+
 /**
  * Structured Logger for Nodiox Auth
  * 
@@ -31,28 +33,8 @@ class Logger {
       } : String(error)
     }
 
-    // Mask PII if accidentally passed
-    return JSON.stringify(this.maskSensitive(payload))
-  }
-
-  private maskSensitive(obj: any): any {
-    const sensitiveKeys = ["password", "token", "code", "secret", "key", "email"]
-    const mask = (val: string) => {
-      if (typeof val !== "string") return val
-      if (val.length < 5) return "***"
-      return `${val.substring(0, 2)}***${val.substring(val.length - 2)}`
-    }
-
-    const newObj = { ...obj }
-    for (const key in newObj) {
-      const lowerKey = key.toLowerCase()
-      if (sensitiveKeys.some(s => lowerKey.includes(s)) && typeof newObj[key] === "string") {
-        newObj[key] = mask(newObj[key])
-      } else if (typeof newObj[key] === "object" && newObj[key] !== null) {
-        newObj[key] = this.maskSensitive(newObj[key])
-      }
-    }
-    return newObj
+    // Mask PII, credentials, DB URLs, provider URLs through centralized redaction
+    return JSON.stringify(redactLogPayload(payload))
   }
 
   info(event: string, data?: LogContext) {

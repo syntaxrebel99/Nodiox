@@ -7,7 +7,9 @@ import { enforceAuthRateLimits, otpVerifyLimiters } from "~/lib/rate-limit"
 import { z } from "zod"
 import { validateCsrf, rotateCsrfToken } from "~/lib/csrf"
 import { validatePasswordPolicy } from "~/lib/password-policy"
-import { respondError } from "~/lib/security-response"
+import { respondError, mapAuthErrorCode, normalizeFailureCode } from "~/lib/security-response"
+import { logger } from "~/lib/logger"
+import { getAuthTestSimulation } from "~/lib/test-simulation"
 
 const RESET_COOKIE = "nodiox_reset_token"
 
@@ -21,28 +23,28 @@ export async function POST(req: Request) {
     // 0. CSRF Validation
     const csrfResult = await validateCsrf(req)
     if (!csrfResult.success) {
-      return NextResponse.json({ error: csrfResult.error }, { status: 403 })
+      return respondError(req, 403, csrfResult.error || "Forbidden", {
+        failureCode: "csrf_rejected",
+      })
     }
 
-    // 1. Validate Body First (so we know target email if we have it logically mapped, wait, reset password only takes token and password...)
+    // 1. Validate Body First
     const body = await req.json()
     const result = resetPasswordSchema.safeParse(body)
     
     if (!result.success) {
-      return NextResponse.json(
-        { error: "Invalid request format", details: result.error.issues },
-        { status: 400 }
-      )
+      return respondError(req, 400, "Invalid request format", {
+        failureCode: "validation_failed",
+      })
     }
 
     const { code, password } = result.data
 
     const policy = validatePasswordPolicy(password)
     if (!policy.ok) {
-      return NextResponse.json(
-        { error: "Password does not meet security requirements", code: policy.error },
-        { status: 400 }
-      )
+      return respondError(req, 400, "Password does not meet security requirements", {
+        failureCode: "weak_password",
+      })
     }
 
     // 2. Execute Rate Limiting (IP purely since email identifier isn't in payload yet)
@@ -52,8 +54,15 @@ export async function POST(req: Request) {
         req,
         namespace: "reset_password"
       });
-    } catch (e: any) {
-      return NextResponse.json({ error: e.message }, { status: 429 })
+    } catch {
+      return respondError(req, 429, "Too many attempts. Please try again later.", {
+        failureCode: "rate_limit_exceeded",
+      })
+    }
+
+    // Strictly gated simulation hooks for automated testing.
+    if (getAuthTestSimulation(req) === "supabase-down") {
+      throw new Error("Supabase auth.updateUser failed at postgresql://postgres:pw@db.supabase.co:5432/main")
     }
 
     // 3. Init Clients
@@ -82,7 +91,7 @@ export async function POST(req: Request) {
         } else {
           // Cleanup expired token
           await admin.from("verification_codes").delete().eq("id", tokenData.id)
-          return NextResponse.json({ error: "Your reset token has expired. Please try again." }, { status: 401 })
+          return respondError(req, 401, "Your reset token has expired. Please try again.")
         }
       }
 
@@ -99,7 +108,7 @@ export async function POST(req: Request) {
             isTokenValidated = true
           } else {
             await admin.from("verification_codes").delete().eq("id", legacyTokenData.id)
-            return NextResponse.json({ error: "Your reset token has expired. Please try again." }, { status: 401 })
+            return respondError(req, 401, "Your reset token has expired. Please try again.")
           }
         }
       }
@@ -108,9 +117,10 @@ export async function POST(req: Request) {
       if (!isTokenValidated) {
         const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(effectiveCode)
         if (exchangeError) {
-          return NextResponse.json(
-            { error: "This secure link has expired or is invalid. Please request a new one." },
-            { status: 401 }
+          return respondError(
+            req,
+            401,
+            "This secure link has expired or is invalid. Please request a new one."
           )
         }
       }
@@ -121,9 +131,10 @@ export async function POST(req: Request) {
     const { data: { user }, error: userError } = await supabase.auth.getUser()
 
     if (userError || !user) {
-      return NextResponse.json(
-        { error: "Your verification session has expired. Please start over." },
-        { status: 401 }
+      return respondError(
+        req,
+        401,
+        "Your verification session has expired. Please start over."
       )
     }
 
@@ -133,10 +144,12 @@ export async function POST(req: Request) {
     })
 
     if (updateError) {
-      return NextResponse.json(
-        { error: updateError.message },
-        { status: 400 }
-      )
+      logger.error("reset_password_update_failed", updateError)
+      const publicError = mapAuthErrorCode((updateError as any).code, updateError.message)
+      return respondError(req, 400, publicError, {
+        failureCode: normalizeFailureCode((updateError as any).code, updateError.message),
+        provider: "supabase",
+      })
     }
 
     // 7. Cleanup the Reset Token if it was used
@@ -165,8 +178,10 @@ export async function POST(req: Request) {
     const response = NextResponse.json({ success: true })
     if (cookieToken) response.cookies.delete(RESET_COOKIE)
     return response
-  } catch (error: any) {
-    console.error("Reset Password Session Error:", error)
-    return respondError(req, 500, "An unexpected error occurred. Please try again.")
+  } catch (error: unknown) {
+    logger.error("reset_password_session_error", error)
+    return respondError(req, 500, "An unexpected error occurred. Please try again.", {
+      failureCode: "unexpected_error",
+    })
   }
 }

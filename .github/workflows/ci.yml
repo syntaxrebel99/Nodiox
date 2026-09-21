@@ -80,6 +80,9 @@ jobs:
       - name: Install Playwright Browsers
         run: pnpm --filter auth exec playwright install --with-deps chromium
 
+      - name: Run Auth Unit & Security Tests
+        run: pnpm --filter auth test:unit
+
       - name: Run Auth API Tests
         run: pnpm --filter auth test:api
 

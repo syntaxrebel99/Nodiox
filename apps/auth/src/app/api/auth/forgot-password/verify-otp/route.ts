@@ -2,10 +2,12 @@ import { NextResponse } from "next/server"
 import { createClient } from "~/lib/supabase/server"
 import { createAdminClient } from "~/lib/supabase/admin"
 import { EmailService } from "~/lib/email-service"
-import { enforceAuthRateLimits, otpVerifyLimiters } from "~/lib/rate-limit"
+import { enforceAuthRateLimits, otpVerifyLimiters, hashIdentifier } from "~/lib/rate-limit"
 import { z } from "zod"
 import { validateCsrf } from "~/lib/csrf"
 import { respondError } from "~/lib/security-response"
+import { logger } from "~/lib/logger"
+import { getAuthTestSimulation } from "~/lib/test-simulation"
 import { normalizeEmail, sanitizeEmail } from "~/lib/normalize-email"
 
 const RESET_COOKIE = "nodiox_reset_token"
@@ -20,7 +22,9 @@ export async function POST(req: Request) {
     // 0. CSRF Validation
     const csrfResult = await validateCsrf(req)
     if (!csrfResult.success) {
-      return NextResponse.json({ error: csrfResult.error }, { status: 403 })
+      return respondError(req, 403, csrfResult.error || "Forbidden", {
+        failureCode: "csrf_rejected",
+      })
     }
 
     // 1. Validate Target First
@@ -28,10 +32,9 @@ export async function POST(req: Request) {
     const result = verifyOtpSchema.safeParse(body)
     
     if (!result.success) {
-      return NextResponse.json(
-        { error: "Invalid request format", details: result.error.issues },
-        { status: 400 }
-      )
+      return respondError(req, 400, "Invalid request format", {
+        failureCode: "validation_failed",
+      })
     }
 
     const { email: rawEmail, token } = result.data
@@ -46,17 +49,30 @@ export async function POST(req: Request) {
         identifier: email,
         namespace: "otp_verify"
       });
-    } catch (e: any) {
-      return NextResponse.json({ error: e.message }, { status: 429 })
+    } catch {
+      return respondError(req, 429, "Too many attempts. Please try again later.", {
+        failureCode: "rate_limit_exceeded",
+      })
+    }
+
+    // Strictly gated simulation hooks for automated testing.
+    if (getAuthTestSimulation(req) === "supabase-down") {
+      throw new Error("Supabase generateLink failed at postgresql://postgres:pw@db.supabase.co:5432/main")
     }
 
     // 3. Verify OTP via Universal Resend Engine
     const { success: isVerified, error: verifyError } = await EmailService.verifyOtp(email, token, "forgot_password")
 
     if (!isVerified) {
-      return NextResponse.json(
-        { error: verifyError || "Invalid or expired verification code" },
-        { status: 401 }
+      return respondError(
+        req,
+        401,
+        verifyError || "Invalid or expired verification code",
+        {
+          failureCode: "otp_invalid",
+          provider: "resend",
+          identifierHash: hashIdentifier("email", email),
+        }
       )
     }
 
@@ -71,11 +87,12 @@ export async function POST(req: Request) {
     })
 
     if (linkError || !properties?.email_otp) {
-      console.error("Forgot Reset Bridge Error:", linkError)
-      return NextResponse.json(
-        { error: "Failed to establish secure session. Please try again." },
-        { status: 500 }
-      )
+      logger.error("forgot_reset_bridge_error", linkError)
+      return respondError(req, 500, "Failed to establish secure session. Please try again.", {
+        failureCode: "provider_unavailable",
+        provider: "supabase",
+        identifierHash: hashIdentifier("email", email),
+      })
     }
 
     // Complete the session exchange internally to set the auth cookies
@@ -86,7 +103,12 @@ export async function POST(req: Request) {
     })
 
     if (finalError) {
-      return NextResponse.json({ error: finalError.message }, { status: 401 })
+      logger.error("forgot_reset_verify_error", finalError)
+      return respondError(req, 401, "Failed to establish secure session. Please try again.", {
+        failureCode: "invalid_credentials",
+        provider: "supabase",
+        identifierHash: hashIdentifier("email", email),
+      })
     }
 
     // 5. Generate and store a One-Time Reset Token (Double-Lock Security)
@@ -120,8 +142,10 @@ export async function POST(req: Request) {
 
     return response
 
-  } catch (error: any) {
-    console.error("Verify OTP Reset Error:", error)
-    return respondError(req, 500, "An unexpected error occurred")
+  } catch (error: unknown) {
+    logger.error("forgot_verify_otp_reset_error", error)
+    return respondError(req, 500, "An unexpected error occurred", {
+      failureCode: "unexpected_error",
+    })
   }
 }

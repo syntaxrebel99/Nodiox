@@ -2,11 +2,13 @@ import { NextResponse } from "next/server"
 import { cookies } from "next/headers"
 import { createStatelessClient } from "~/lib/supabase/stateless"
 import { EmailService } from "~/lib/email-service"
-import { enforceAuthRateLimits, loginLimiters } from "~/lib/rate-limit"
+import { enforceAuthRateLimits, loginLimiters, hashIdentifier } from "~/lib/rate-limit"
 import { z } from "zod"
 import { validateCsrf, rotateCsrfToken } from "~/lib/csrf"
 import { respondError } from "~/lib/security-response"
 import { SmsService } from "~/lib/sms-service"
+import { logger } from "~/lib/logger"
+import { getAuthTestSimulation } from "~/lib/test-simulation"
 import {
   getLoginChallengeCookieOptions,
   invalidatePendingLoginChallenge,
@@ -44,7 +46,9 @@ export async function POST(req: Request) {
     // 0. CSRF Validation
     const csrfResult = await validateCsrf(req)
     if (!csrfResult.success) {
-      return NextResponse.json({ error: csrfResult.error }, { status: 403 })
+      return respondError(req, 403, csrfResult.error || "Forbidden", {
+        failureCode: "csrf_rejected",
+      })
     }
 
     // 1. Validate Request Body
@@ -52,10 +56,9 @@ export async function POST(req: Request) {
     const result = loginSchema.safeParse(body)
     
     if (!result.success) {
-      return NextResponse.json(
-        { error: "Invalid request format", details: result.error.issues },
-        { status: 400 }
-      )
+      return respondError(req, 400, "Invalid request format", {
+        failureCode: "validation_failed",
+      })
     }
 
     const { email: rawEmail, phone: rawPhone, password } = result.data
@@ -71,8 +74,19 @@ export async function POST(req: Request) {
         identifier: email || phone,
         namespace: "login"
       });
-    } catch (e: any) {
-      return NextResponse.json({ error: e.message }, { status: 429 })
+    } catch {
+      return respondError(req, 429, "Too many attempts. Please try again later.", {
+        failureCode: "rate_limit_exceeded",
+      })
+    }
+
+    // Strictly gated simulation hooks for automated testing.
+    const simulation = getAuthTestSimulation(req)
+    if (simulation === "supabase-down") {
+      throw new Error("Supabase Postgres connection failed at postgresql://postgres:pw@db.supabase.co:5432/main for user user@example.com")
+    }
+    if (simulation === "notification-down") {
+      throw new Error("Resend API rejected delivery to user@example.com with api_key=re_123456789")
     }
 
     const cookieStore = await cookies()
@@ -86,20 +100,18 @@ export async function POST(req: Request) {
       // Supabase password identity is still the user's email-based account.
       const authUser = await findAuthUserByPhone(phone)
       if (!authUser?.email) {
-        return NextResponse.json(
-          { error: "Invalid credentials" },
-          { status: 401 }
-        )
+        return respondError(req, 401, "Invalid credentials", {
+          failureCode: "invalid_credentials",
+        })
       }
 
       resolvedEmail = normalizeEmail(authUser.email)
     }
 
     if (!resolvedEmail) {
-      return NextResponse.json(
-        { error: "Invalid credentials" },
-        { status: 401 }
-      )
+      return respondError(req, 401, "Invalid credentials", {
+        failureCode: "invalid_credentials",
+      })
     }
 
     // 3. Verify credentials without issuing the final session yet.
@@ -109,10 +121,10 @@ export async function POST(req: Request) {
     })
 
     if (signInError) {
-      return NextResponse.json(
-        { error: "Invalid credentials" },
-        { status: 401 }
-      )
+      return respondError(req, 401, "Invalid credentials", {
+        failureCode: "invalid_credentials",
+        provider: "supabase",
+      })
     }
 
     // 4. If password is valid, send factor 2 and issue a short-lived login challenge.
@@ -149,15 +161,17 @@ export async function POST(req: Request) {
       response.headers.set("x-csrf-token", newToken)
       return response
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : "Failed to send verification code"
-      console.error("Login MFA Send Error:", error)
-      return NextResponse.json(
-        { error: message },
-        { status: 500 }
-      )
+      logger.error("login_mfa_send_failed", error)
+      return respondError(req, 500, "Failed to send verification code", {
+        failureCode: "mfa_send_failed",
+        provider: email ? "resend" : "infobip",
+        identifierHash: email ? hashIdentifier("email", email) : phone ? hashIdentifier("phone", phone) : undefined,
+      })
     }
   } catch (error: unknown) {
-    console.error("Login Error:", error)
-    return respondError(req, 500, "An unexpected error occurred")
+    logger.error("login_error", error)
+    return respondError(req, 500, "An unexpected error occurred", {
+      failureCode: "unexpected_error",
+    })
   }
 }
