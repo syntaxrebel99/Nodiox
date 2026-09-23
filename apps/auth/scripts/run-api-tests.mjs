@@ -32,7 +32,7 @@ function getNodeArgs(testFiles) {
   return [
     "--experimental-strip-types",
     "--test",
-    "--test-isolation=none",
+    "--experimental-test-isolation=none",
     ...testFiles,
   ]
 }

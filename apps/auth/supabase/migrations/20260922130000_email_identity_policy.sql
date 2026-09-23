@@ -215,18 +215,15 @@ BEGIN
       'purge-verification-codes',
       '*/15 * * * *',
       'SELECT public.purge_expired_verification_codes()',
-      current_database(),
-      'postgres',
-      true
+      current_database()
     );
   ELSE
     PERFORM cron.alter_job(
       purge_job_id,
-      '*/15 * * * *',
-      'SELECT public.purge_expired_verification_codes()',
-      current_database(),
-      'postgres',
-      true
+      schedule => '*/15 * * * *',
+      command => 'SELECT public.purge_expired_verification_codes()',
+      database => current_database(),
+      active => true
     );
   END IF;
 END;

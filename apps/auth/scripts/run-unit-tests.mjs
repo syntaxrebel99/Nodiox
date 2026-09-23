@@ -64,7 +64,7 @@ async function main() {
     [
       "--experimental-strip-types",
       "--test",
-      "--test-isolation=none",
+      "--experimental-test-isolation=none",
       ...testFiles.map((file) => relative(projectRoot, file)),
     ],
     { cwd: projectRoot }
