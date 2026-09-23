@@ -7,11 +7,7 @@ import { useRouter } from "@nodiox/i18n"
 import { createPasswordAndConfirmSchema as createResetPasswordSchema, type PasswordAndConfirmData as ResetPasswordData } from "~/lib/password-schemas"
 import { Step3NewPassword } from "~/components/forgot-password/step3-new-password"
 
-interface PasswordResetFormProps {
-  code?: string;
-}
-
-export function PasswordResetForm({ code }: PasswordResetFormProps) {
+export function PasswordResetForm() {
   const router = useRouter()
   const methods = useForm<ResetPasswordData>({
     resolver: zodResolver(createResetPasswordSchema()),
@@ -25,8 +21,7 @@ export function PasswordResetForm({ code }: PasswordResetFormProps) {
   return (
     <div className="w-full">
       <FormProvider {...methods}>
-        <Step3NewPassword 
-          otp={code || "cookie"} 
+        <Step3NewPassword
           onBack={() => {
             router.push("/login")
           }} 

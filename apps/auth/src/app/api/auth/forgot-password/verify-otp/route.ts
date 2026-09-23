@@ -1,14 +1,15 @@
 import { NextResponse } from "next/server"
-import { createClient } from "~/lib/supabase/server"
+import { randomUUID } from "node:crypto"
 import { createAdminClient } from "~/lib/supabase/admin"
 import { EmailService } from "~/lib/email-service"
 import { enforceAuthRateLimits, otpVerifyLimiters, hashIdentifier } from "~/lib/rate-limit"
+import { emailRateLimitIdentifier } from "~/lib/auth-rate-limit-identifier"
 import { z } from "zod"
 import { validateCsrf } from "~/lib/csrf"
 import { respondError } from "~/lib/security-response"
 import { logger } from "~/lib/logger"
 import { getAuthTestSimulation } from "~/lib/test-simulation"
-import { normalizeEmail, sanitizeEmail } from "~/lib/normalize-email"
+import { isCanonicalEmailIdentity, resolveEmailIdentity } from "~/lib/normalize-email"
 
 const RESET_COOKIE = "nodiox_reset_token"
 
@@ -38,15 +39,20 @@ export async function POST(req: Request) {
     }
 
     const { email: rawEmail, token } = result.data
-    const recipientEmail = sanitizeEmail(rawEmail)
-    const email = normalizeEmail(recipientEmail)
+    const { canonicalEmail: email, recipientEmail } = resolveEmailIdentity(rawEmail)
+
+    if (!isCanonicalEmailIdentity(email)) {
+      return respondError(req, 400, "Invalid request format", {
+        failureCode: "validation_failed",
+      })
+    }
 
     // 2. Execute Tri-Layer Rate Limiting (IP + ID, Bounded Tarpit)
     try {
       await enforceAuthRateLimits({
         limiters: otpVerifyLimiters,
         req,
-        identifier: email,
+        identifier: emailRateLimitIdentifier(email),
         namespace: "otp_verify"
       });
     } catch {
@@ -57,7 +63,7 @@ export async function POST(req: Request) {
 
     // Strictly gated simulation hooks for automated testing.
     if (getAuthTestSimulation(req) === "supabase-down") {
-      throw new Error("Supabase generateLink failed at postgresql://postgres:pw@db.supabase.co:5432/main")
+      throw new Error("Supabase reset identity lookup failed")
     }
 
     // 3. Verify OTP via Universal Resend Engine
@@ -76,62 +82,63 @@ export async function POST(req: Request) {
       )
     }
 
-    // 4. Identity Verified! -> Bridge to a real Supabase session
-    // We generate a one-time magiclink internally and verify it to set the official cookies.
+    // 4. Resolve the exact Auth user without creating a session. The RPC is
+    // service-role-only and receives an already canonical identity.
     const admin = createAdminClient()
-    const supabase = await createClient() // Server client with cookie handling
-    
-    const { data: { properties }, error: linkError } = await admin.auth.admin.generateLink({
-      type: "magiclink",
-      email,
-    })
+    const { data: authUserId, error: userLookupError } = await admin.rpc(
+      "get_auth_user_id_by_canonical_email",
+      { email_input: email },
+    )
 
-    if (linkError || !properties?.email_otp) {
-      logger.error("forgot_reset_bridge_error", linkError)
-      return respondError(req, 500, "Failed to establish secure session. Please try again.", {
+    if (userLookupError) {
+      logger.error("forgot_reset_user_lookup_error", userLookupError)
+      return respondError(req, 503, "Authentication service temporarily unavailable", {
         failureCode: "provider_unavailable",
         provider: "supabase",
-        identifierHash: hashIdentifier("email", email),
       })
     }
 
-    // Complete the session exchange internally to set the auth cookies
-    const { error: finalError } = await supabase.auth.verifyOtp({
-      email,
-      token: properties.email_otp,
-      type: "magiclink",
-    })
-
-    if (finalError) {
-      logger.error("forgot_reset_verify_error", finalError)
-      return respondError(req, 401, "Failed to establish secure session. Please try again.", {
-        failureCode: "invalid_credentials",
-        provider: "supabase",
-        identifierHash: hashIdentifier("email", email),
+    if (typeof authUserId !== "string" || authUserId.length === 0) {
+      return respondError(req, 401, "Invalid or expired verification code", {
+        failureCode: "otp_invalid",
+        provider: "resend",
       })
     }
 
-    // 5. Generate and store a One-Time Reset Token (Double-Lock Security)
-    const resetToken = crypto.randomUUID()
+    // 5. Bind a one-time reset credential to the canonical identity and Auth
+    // user. Upsert replaces a prior reset credential for this user/type.
+    const resetToken = randomUUID()
     const resetTokenHash = EmailService.hashResetTokenV1(resetToken)
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString() // 10 mins
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString()
 
-    await admin.from("verification_codes").insert({
+    const { error: resetRecordError } = await admin.from("verification_codes").upsert({
       email,
-      // Store only a hash at rest; the raw token is returned to the client once.
-      code: `reset_v1.${resetTokenHash}`, // backward compatible storage
+      recipient_email: recipientEmail,
+      auth_user_id: authUserId,
       code_hash: resetTokenHash,
       code_version: "reset_hmac_sha256_v1",
       type: "reset_token",
       expires_at: expiresAt,
-    })
+      consumed_at: null,
+      attempt_count: 0,
+      last_attempt_at: null,
+    }, { onConflict: "email,type" })
+
+    if (resetRecordError) {
+      logger.error("forgot_reset_token_store_error", resetRecordError)
+      return respondError(req, 500, "Failed to establish secure reset", {
+        failureCode: "provider_unavailable",
+        provider: "supabase",
+      })
+    }
 
     const response = NextResponse.json({
       success: true,
       message: "Identity verified! Redirecting to secure reset...",
     })
 
-    // Keep the raw token out of the URL; store it in a short-lived httpOnly cookie instead.
+    // Keep the raw token out of the URL; store it in a short-lived HTTP-only
+    // cookie. Completion consumes the corresponding hash exactly once.
     response.cookies.set(RESET_COOKIE, resetToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",

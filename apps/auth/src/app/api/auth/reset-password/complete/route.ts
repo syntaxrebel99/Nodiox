@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server"
 import { cookies } from "next/headers"
-import { createClient } from "~/lib/supabase/server"
 import { createAdminClient } from "~/lib/supabase/admin"
 import { EmailService } from "~/lib/email-service"
 import { enforceAuthRateLimits, otpVerifyLimiters } from "~/lib/rate-limit"
@@ -10,13 +9,51 @@ import { validatePasswordPolicy } from "~/lib/password-policy"
 import { respondError, mapAuthErrorCode, normalizeFailureCode } from "~/lib/security-response"
 import { logger } from "~/lib/logger"
 import { getAuthTestSimulation } from "~/lib/test-simulation"
+import { isCanonicalEmailIdentity, normalizeEmail } from "~/lib/normalize-email"
 
 const RESET_COOKIE = "nodiox_reset_token"
 
 const resetPasswordSchema = z.object({
-  code: z.string().optional(),
   password: z.string().min(8),
-})
+}).strict()
+
+interface ResetTokenRecord {
+  id: string
+  email: string
+  recipient_email: string
+  auth_user_id: string
+}
+
+function isResetTokenRecord(value: unknown): value is ResetTokenRecord {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false
+  }
+
+  const record = value as Record<string, unknown>
+  return (
+    typeof record.id === "string" &&
+    typeof record.email === "string" &&
+    record.email.length > 0 &&
+    isCanonicalEmailIdentity(record.email) &&
+    typeof record.recipient_email === "string" &&
+    record.recipient_email.trim().length > 0 &&
+    typeof record.auth_user_id === "string" &&
+    record.auth_user_id.length > 0
+  )
+}
+
+function getProviderErrorCode(error: unknown): string | undefined {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof error.code === "string"
+  ) {
+    return error.code
+  }
+
+  return undefined
+}
 
 export async function POST(req: Request) {
   try {
@@ -38,7 +75,7 @@ export async function POST(req: Request) {
       })
     }
 
-    const { code, password } = result.data
+    const { password } = result.data
 
     const policy = validatePasswordPolicy(password)
     if (!policy.ok) {
@@ -65,112 +102,97 @@ export async function POST(req: Request) {
       throw new Error("Supabase auth.updateUser failed at postgresql://postgres:pw@db.supabase.co:5432/main")
     }
 
-    // 3. Init Clients
-    const supabase = await createClient()
+    // 3. Read the only reset credential accepted by the permanent flow.
     const admin = createAdminClient()
     const cookieStore = await cookies()
     const cookieToken = cookieStore.get(RESET_COOKIE)?.value
-    const effectiveCode = code ?? cookieToken
-    let isTokenValidated = false
-
-    // 4. SECURITY HANDSHAKE (Double-Lock)
-    // If a 'code' is provided, it could be a legacy Supabase link or our new secure resetToken.
-    if (effectiveCode) {
-      // A. Check if it's our custom secure reset_token (OTP Flow)
-      const resetTokenHash = EmailService.hashResetTokenV1(effectiveCode)
-      const { data: tokenData } = await admin
-        .from("verification_codes")
-        .select("*")
-        // Prefer modern hashed token lookup
-        .match({ type: "reset_token", code_hash: resetTokenHash })
-        .single()
-
-      if (tokenData) {
-        if (new Date(tokenData.expires_at) > new Date()) {
-          isTokenValidated = true
-        } else {
-          // Cleanup expired token
-          await admin.from("verification_codes").delete().eq("id", tokenData.id)
-          return respondError(req, 401, "Your reset token has expired. Please try again.")
-        }
-      }
-
-      // Backward compatibility: legacy reset tokens stored in plaintext `code`
-      if (!isTokenValidated) {
-        const { data: legacyTokenData } = await admin
-          .from("verification_codes")
-          .select("*")
-          .match({ code: effectiveCode, type: "reset_token" })
-          .single()
-
-        if (legacyTokenData) {
-          if (new Date(legacyTokenData.expires_at) > new Date()) {
-            isTokenValidated = true
-          } else {
-            await admin.from("verification_codes").delete().eq("id", legacyTokenData.id)
-            return respondError(req, 401, "Your reset token has expired. Please try again.")
-          }
-        }
-      }
-
-      // B. If not our token, try Supabase's built-in code exchange (Link/Recovery Flow)
-      if (!isTokenValidated) {
-        const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(effectiveCode)
-        if (exchangeError) {
-          return respondError(
-            req,
-            401,
-            "This secure link has expired or is invalid. Please request a new one."
-          )
-        }
-      }
+    if (!cookieToken) {
+      return respondError(req, 401, "Your reset session has expired. Please start over.", {
+        failureCode: "session_expired",
+      })
     }
 
-    // 5. Verify Active Identity
-    // MUST have an active user session established via either the bridge or the code exchange.
-    const { data: { user }, error: userError } = await supabase.auth.getUser()
+    // 4. Atomically consume the reset token. A failed password update requires
+    // a fresh verification flow rather than leaving a reusable credential alive.
+    const resetTokenHash = EmailService.hashResetTokenV1(cookieToken)
+    const { data: tokenData, error: tokenError } = await admin
+      .from("verification_codes")
+      .delete()
+      .match({
+        type: "reset_token",
+        code_hash: resetTokenHash,
+        code_version: "reset_hmac_sha256_v1",
+      })
+      .gt("expires_at", new Date().toISOString())
+      .select("id, email, recipient_email, auth_user_id")
+      .maybeSingle()
 
-    if (userError || !user) {
+    if (tokenError) {
+      logger.error("reset_password_token_consume_failed", tokenError)
+      return respondError(req, 500, "Unable to reset password. Please try again.", {
+        failureCode: "provider_unavailable",
+        provider: "supabase",
+      })
+    }
+
+    if (!isResetTokenRecord(tokenData)) {
       return respondError(
         req,
         401,
-        "Your verification session has expired. Please start over."
+        "Your reset session has expired. Please start over.",
+        { failureCode: "session_expired" }
       )
     }
 
-    // 6. Securely Update Password
-    const { error: updateError } = await supabase.auth.updateUser({
+    // 5. Bind the consumed credential to the exact canonical Auth identity.
+    const {
+      data: { user },
+      error: userError,
+    } = await admin.auth.admin.getUserById(tokenData.auth_user_id)
+
+    if (
+      userError ||
+      !user?.email ||
+      user.email !== tokenData.email ||
+      !isCanonicalEmailIdentity(user.email) ||
+      normalizeEmail(user.email) !== tokenData.email
+    ) {
+      logger.warn("reset_password_token_identity_mismatch", {
+        tokenId: tokenData.id,
+        authUserId: tokenData.auth_user_id,
+      })
+      return respondError(req, 401, "Your reset session has expired. Please start over.", {
+        failureCode: "session_expired",
+      })
+    }
+
+    // 6. Update through the Admin API; no reset flow creates or relies on a session.
+    const { error: updateError } = await admin.auth.admin.updateUserById(user.id, {
       password: password,
     })
 
     if (updateError) {
       logger.error("reset_password_update_failed", updateError)
-      const publicError = mapAuthErrorCode((updateError as any).code, updateError.message)
+      const providerCode = getProviderErrorCode(updateError)
+      const publicError = mapAuthErrorCode(providerCode, updateError.message)
       return respondError(req, 400, publicError, {
-        failureCode: normalizeFailureCode((updateError as any).code, updateError.message),
+        failureCode: normalizeFailureCode(providerCode, updateError.message),
         provider: "supabase",
       })
     }
 
-    // 7. Cleanup the Reset Token if it was used
-    if (isTokenValidated && effectiveCode) {
-      const resetTokenHash = EmailService.hashResetTokenV1(effectiveCode)
-      // Delete both modern + legacy forms.
-      await admin.from("verification_codes").delete().match({ type: "reset_token", code_hash: resetTokenHash })
-      await admin.from("verification_codes").delete().match({ code: effectiveCode, type: "reset_token" })
+    // 7. Delivery remains separate from the canonical identity. A notification
+    // failure cannot turn an already-completed password update into a retryable
+    // reset flow, so it is recorded for operational follow-up instead.
+    const locale = cookieStore.get("NEXT_LOCALE")?.value || "en"
+    try {
+      await EmailService.sendPasswordChangedAlert(tokenData.recipient_email, locale)
+    } catch (alertError) {
+      logger.error("reset_password_alert_failed", alertError, {
+        tokenId: tokenData.id,
+        authUserId: user.id,
+      })
     }
-
-
-    // 6. Security Alert: Notify the user that their password was changed
-    if (user.email) {
-      // Get Locale from Cookie (NEXT_LOCALE)
-      const locale = cookieStore.get("NEXT_LOCALE")?.value || "en"
-      // We await this to maintain request context for getTranslations
-      await EmailService.sendPasswordChangedAlert(user.email, locale)
-    }
-
-    // 7. Sign out the session used for reset to force a fresh login
-    await supabase.auth.signOut()
 
     // 8. CSRF Token Rotation on successful password change
     await rotateCsrfToken()
@@ -179,7 +201,7 @@ export async function POST(req: Request) {
     if (cookieToken) response.cookies.delete(RESET_COOKIE)
     return response
   } catch (error: unknown) {
-    logger.error("reset_password_session_error", error)
+    logger.error("reset_password_error", error)
     return respondError(req, 500, "An unexpected error occurred. Please try again.", {
       failureCode: "unexpected_error",
     })

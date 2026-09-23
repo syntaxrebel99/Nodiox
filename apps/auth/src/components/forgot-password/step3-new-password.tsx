@@ -15,10 +15,9 @@ import { apiFetch } from "~/lib/api-client"
 
 interface Step3NewPasswordProps {
   onBack: () => void
-  otp: string // Either the 6-digit OTP or a secure resetToken UUID
 }
 
-export function Step3NewPassword({ onBack, otp }: Step3NewPasswordProps) {
+export function Step3NewPassword({ onBack }: Step3NewPasswordProps) {
   const t = useTranslations("PasswordReset")
   const common = useTranslations("Index")
   const router = useRouter()
@@ -80,7 +79,6 @@ export function Step3NewPassword({ onBack, otp }: Step3NewPasswordProps) {
       const res = await apiFetch("/api/auth/reset-password/complete", {
         method: "POST",
         body: JSON.stringify({
-          code: otp === "session" || otp === "cookie" ? undefined : otp,
           password: password,
         }),
       })

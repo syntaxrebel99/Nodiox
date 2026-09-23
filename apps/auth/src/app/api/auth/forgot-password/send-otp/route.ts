@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { cookies } from "next/headers"
 import { enforceAuthRateLimits, otpSendLimiters, otpSendCooldownLimit, hashIdentifier } from "~/lib/rate-limit"
+import { emailRateLimitIdentifier } from "~/lib/auth-rate-limit-identifier"
 import { EmailService } from "~/lib/email-service"
 import { createAdminClient } from "~/lib/supabase/admin"
 import { z } from "zod"
@@ -9,7 +10,7 @@ import { respondError } from "~/lib/security-response"
 import { logger } from "~/lib/logger"
 import { getAuthTestSimulation } from "~/lib/test-simulation"
 
-import { normalizeEmail, sanitizeEmail } from "~/lib/normalize-email"
+import { isCanonicalEmailIdentity, resolveEmailIdentity } from "~/lib/normalize-email"
 
 const forgotPasswordSchema = z.object({
   email: z.string().email(),
@@ -37,15 +38,20 @@ export async function POST(req: Request) {
 
     const { email: rawEmail } = result.data
 
-    const recipientEmail = sanitizeEmail(rawEmail)
-    const email = normalizeEmail(recipientEmail)
+    const { canonicalEmail: email, recipientEmail } = resolveEmailIdentity(rawEmail)
+
+    if (!isCanonicalEmailIdentity(email)) {
+      return respondError(req, 400, "Invalid request format", {
+        failureCode: "validation_failed",
+      })
+    }
 
     // 2. Execute Tri-Layer Rate Limiting (IP + ID, Bounded Tarpit)
     try {
       await enforceAuthRateLimits({
         limiters: [...otpSendLimiters, otpSendCooldownLimit],
         req,
-        identifier: email,
+        identifier: emailRateLimitIdentifier(email),
         namespace: "otp_send"
       });
     } catch {
@@ -67,12 +73,16 @@ export async function POST(req: Request) {
     // Check if the user actually exists in Supabase.
     // If NOT, we still return 'Success' but don't actually trigger the email.
     const admin = createAdminClient()
-    const { data: userExists, error: rpcError } = await admin.rpc("check_user_exists", { 
-      email_input: email 
+    const { data: userExists, error: rpcError } = await admin.rpc("check_user_exists", {
+      email_input: email,
     })
     
     if (rpcError) {
       logger.error("forgot_otp_rpc_error", rpcError)
+      return respondError(req, 503, "Authentication service temporarily unavailable", {
+        failureCode: "provider_unavailable",
+        provider: "supabase",
+      })
     }
 
     // 4. Get Locale from Cookie (NEXT_LOCALE)

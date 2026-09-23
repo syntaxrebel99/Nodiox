@@ -33,9 +33,9 @@ export function Step2Email({ onNext, onBack, isLoading, serverError, setServerEr
   const firstName = fullName.trim().split(" ")[0] || ""
 
   const handleEmailChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const lowercased = e.target.value.toLowerCase()
-    const sanitized = lowercased.replace(/\s+/g, "")
-    setValue("email", sanitized, { shouldValidate: true })
+    // Keep the delivery address as entered.  The server owns canonical
+    // identity resolution; non-Gmail dots/+tags must not be rewritten here.
+    setValue("email", e.target.value, { shouldValidate: true })
     if (emailTouched) setEmailTouched(false)
     if (serverError) setServerError(null)
   }

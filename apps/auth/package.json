@@ -11,8 +11,10 @@
     "lint": "eslint",
     "type-check": "tsc --noEmit",
     "test": "pnpm run test:unit && pnpm run test:api",
-    "test:unit": "node --experimental-strip-types --test ./src/__tests__/unit/redaction.test.ts",
+    "test:unit": "node ./scripts/run-unit-tests.mjs",
     "test:api": "node ./scripts/run-api-tests.mjs",
+    "test:auth-migration-contract": "node ./scripts/test-email-identity-auth-migration.mjs",
+    "migrate:email-identity": "node --experimental-strip-types ./scripts/migrate-email-identity.ts",
     "test:e2e": "playwright test"
   },
   "dependencies": {
@@ -46,6 +48,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9.39.4",
+    "supabase": "2.117.0",
     "tailwindcss": "^4",
     "typescript": "^5"
   }

@@ -1,0 +1,41 @@
+{
+  "formatVersion": 1,
+  "redactSecrets": true,
+  "scope": "database",
+  "loadOrder": [
+    "public/default_privileges.sql",
+    "public/schema.sql",
+    "_cluster/extensions/pg_cron.sql",
+    "_cluster/extensions/pgcrypto.sql",
+    "_cluster/extensions/uuid-ossp.sql",
+    "auth/tables/users.sql",
+    "public/tables/auth_user_phone_identities.sql",
+    "public/tables/verification_codes.sql",
+    "public/functions/check_user_exists.sql",
+    "public/functions/get_auth_user_id_by_canonical_email.sql",
+    "public/functions/purge_expired_verification_codes.sql",
+    "public/functions/rls_auto_enable.sql",
+    "public/functions/sync_auth_user_phone_identity.sql",
+    "_cluster/event_triggers.sql",
+    "_cluster/misc.sql"
+  ],
+  "profile": "supabase",
+  "defaultOwner": "postgres",
+  "files": [
+    "_cluster/event_triggers.sql",
+    "_cluster/extensions/pg_cron.sql",
+    "_cluster/extensions/pgcrypto.sql",
+    "_cluster/extensions/uuid-ossp.sql",
+    "_cluster/misc.sql",
+    "auth/tables/users.sql",
+    "public/default_privileges.sql",
+    "public/functions/check_user_exists.sql",
+    "public/functions/get_auth_user_id_by_canonical_email.sql",
+    "public/functions/purge_expired_verification_codes.sql",
+    "public/functions/rls_auto_enable.sql",
+    "public/functions/sync_auth_user_phone_identity.sql",
+    "public/schema.sql",
+    "public/tables/auth_user_phone_identities.sql",
+    "public/tables/verification_codes.sql"
+  ]
+}

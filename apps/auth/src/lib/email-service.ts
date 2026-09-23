@@ -8,10 +8,12 @@ import { securityLog } from "./security-log"
 import { withRetry } from "./reliability"
 import { getAuthEnv } from "./env"
 import { logger } from "./logger.ts"
+import { getEmailOtpAttemptKey, type EmailOtpType } from "./email-otp-attempt-key.ts"
+import { isCanonicalEmailIdentity, normalizeEmail } from "./normalize-email.ts"
 
 const resend = new Resend(getAuthEnv().RESEND_API_KEY)
 
-export type OtpType = "forgot_password" | "login_mfa" | "signup"
+export type OtpType = EmailOtpType
 
 /**
  * Shared HTML Layout with Multi-language and RTL support.
@@ -153,40 +155,44 @@ export const EmailService = {
     try {
       const supabase = createAdminClient()
       const t = await getTranslations({ locale, namespace: 'Emails' })
-      const recipientEmail = options?.recipientEmail ?? email
+      if (!isCanonicalEmailIdentity(email)) {
+        throw new Error("Email OTP storage requires a canonical email")
+      }
+
+      const recipientEmail = options?.recipientEmail?.trim() || email
+      if (!isCanonicalEmailIdentity(email) || normalizeEmail(recipientEmail) !== email) {
+        throw new Error("Email OTP recipient does not match the canonical identity")
+      }
       
       // 1. Generate 6-digit code
       const code = crypto.randomInt(100000, 999999).toString()
       const saltB64 = crypto.randomBytes(16).toString("base64url")
       const codeHash = EmailService._hashOtpV1(code, saltB64)
-      const storedCode = `v1.${saltB64}.${codeHash}`
       
       // 2. Set expiry (10 minutes)
       const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString()
 
-      // 3. Delete any existing codes for this email and type
-      await supabase
-        .from("verification_codes")
-        .delete()
-        .match({ email, type })
-
-      // Clear any past attempt counters since we are issuing a new code
-      const attemptsKey = `@nodiox/otp_attempts:${hashIdentifier('email', email)}`
+      // 3. Clear any past attempt counters since we are issuing a new code
+      const attemptsKey = getEmailOtpAttemptKey(email, type)
       await redisClient.del(attemptsKey)
 
-      // 4. Store code in DB
+      // 4. Store only the versioned hash and the separate delivery recipient.
+      // Upsert makes resend replacement safe under the permanent unique
+      // (email,type) constraint.
       const { error: dbError } = await supabase
         .from("verification_codes")
-        .insert({
+        .upsert({
           email,
-          // Store only a salted+peppered hash (no plaintext OTP at rest).
-          code: storedCode,
+          recipient_email: recipientEmail,
           code_hash: codeHash,
           code_salt: saltB64,
           code_version: "otp_hmac_sha256_v1",
           type,
           expires_at: expiresAt,
-        })
+          consumed_at: null,
+          attempt_count: 0,
+          last_attempt_at: null,
+        }, { onConflict: "email,type" })
 
       if (dbError) {
         logger.error("email_otp_db_store_failed", dbError)
@@ -249,9 +255,13 @@ export const EmailService = {
    */
   async verifyOtp(email: string, code: string, type: OtpType) {
     const supabase = createAdminClient()
+
+    if (!isCanonicalEmailIdentity(email)) {
+      return { success: false, error: "Invalid or expired verification code" }
+    }
     
     // Evaluate Upstash Redis Hard-Lock attempts
-    const attemptsKey = `@nodiox/otp_attempts:${hashIdentifier('email', `${email}:${type}`)}`
+    const attemptsKey = getEmailOtpAttemptKey(email, type)
     const attempts = await redisClient.incr(attemptsKey)
     
     // Set expiry for 15 minutes roughly tracking the OTP lifespan if first attempt
@@ -273,7 +283,7 @@ export const EmailService = {
 
     const { data, error: dbError } = await supabase
       .from("verification_codes")
-      .select("*")
+      .select("id, email, type, expires_at, code_hash, code_salt, code_version")
       .match({ email, type })
       .single()
 
@@ -314,22 +324,20 @@ export const EmailService = {
     const storedHash: string | null = data.code_hash ?? null
     const storedVersion: string | null = data.code_version ?? null
 
-    let saltB64 = "invalid"
-    let hashB64 = "invalid"
-    let expectedHash = "invalid"
-
-    if (storedVersion === "otp_hmac_sha256_v1" && storedSalt && storedHash) {
-      saltB64 = storedSalt
-      hashB64 = storedHash
-      expectedHash = EmailService._hashOtpV1(code, saltB64)
-    } else {
-      // Backward compatible path: parse v1.<salt>.<hash> stored in `code`
-      const legacy: string = data.code ?? ""
-      const parts = legacy.split(".")
-      saltB64 = parts.length === 3 && parts[0] === "v1" ? parts[1] : "invalid"
-      hashB64 = parts.length === 3 && parts[0] === "v1" ? parts[2] : "invalid"
-      expectedHash = EmailService._hashOtpV1(code, saltB64)
+    if (storedVersion !== "otp_hmac_sha256_v1" || !storedSalt || !storedHash) {
+      await supabase.from("verification_codes").delete().eq("id", data.id)
+      securityLog("warn", "otp_verification_failed", {
+        channel: "email",
+        type,
+        emailHash: hashIdentifier("email", email),
+        reason: "unsupported_code_version",
+      })
+      return { success: false, error: "Invalid or expired verification code" }
     }
+
+    const saltB64 = storedSalt
+    const hashB64 = storedHash
+    const expectedHash = EmailService._hashOtpV1(code, saltB64)
 
     const a = Buffer.from(hashB64)
     const b = Buffer.from(expectedHash)
@@ -344,8 +352,17 @@ export const EmailService = {
       return { success: false, error: "Invalid or expired verification code" }
     }
 
-    // Success! Delete the code so it cannot be used again
-    await supabase.from("verification_codes").delete().eq("id", data.id)
+    // Consume the row with a returning delete. Concurrent verifications may
+    // both validate the hash, but only the request that deletes the row wins.
+    const { data: consumedRows, error: consumeError } = await supabase
+      .from("verification_codes")
+      .delete()
+      .eq("id", data.id)
+      .select("id")
+
+    if (consumeError || !consumedRows || consumedRows.length !== 1) {
+      return { success: false, error: "Invalid or expired verification code" }
+    }
     
     // Clear the attempts cache
     await redisClient.del(attemptsKey)

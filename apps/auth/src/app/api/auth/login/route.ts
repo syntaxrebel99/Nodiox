@@ -3,6 +3,7 @@ import { cookies } from "next/headers"
 import { createStatelessClient } from "~/lib/supabase/stateless"
 import { EmailService } from "~/lib/email-service"
 import { enforceAuthRateLimits, loginLimiters, hashIdentifier } from "~/lib/rate-limit"
+import { emailRateLimitIdentifier, phoneRateLimitIdentifier } from "~/lib/auth-rate-limit-identifier"
 import { z } from "zod"
 import { validateCsrf, rotateCsrfToken } from "~/lib/csrf"
 import { respondError } from "~/lib/security-response"
@@ -16,7 +17,11 @@ import {
   LOGIN_CHALLENGE_COOKIE,
 } from "~/lib/pending-login"
 
-import { normalizeEmail, sanitizeEmail } from "~/lib/normalize-email"
+import {
+  isCanonicalEmailIdentity,
+  normalizeEmail,
+  resolveEmailIdentity,
+} from "~/lib/normalize-email"
 import { normalizePhoneNumber, validatePhoneNumber } from "~/lib/phone-validation"
 import { findAuthUserByPhone } from "~/lib/auth-user-lookup"
 
@@ -37,8 +42,8 @@ const loginSchema = z.object({
     }).optional()
   ),
   password: z.string().min(1),
-}).refine(data => data.email || data.phone, {
-  message: "Either email or phone is required",
+}).refine(data => Boolean(data.email) !== Boolean(data.phone), {
+  message: "Provide exactly one email or phone identifier",
 })
 
 export async function POST(req: Request) {
@@ -62,16 +67,25 @@ export async function POST(req: Request) {
     }
 
     const { email: rawEmail, phone: rawPhone, password } = result.data
-    const recipientEmail = rawEmail ? sanitizeEmail(rawEmail) : undefined
-    const email = recipientEmail ? normalizeEmail(recipientEmail) : undefined
+    const emailIdentity = rawEmail ? resolveEmailIdentity(rawEmail) : undefined
+    const recipientEmail = emailIdentity?.recipientEmail
+    const email = emailIdentity?.canonicalEmail
     const phone = rawPhone ? normalizePhoneNumber(rawPhone) : undefined
+
+    if (email && !isCanonicalEmailIdentity(email)) {
+      return respondError(req, 400, "Invalid request format", {
+        failureCode: "validation_failed",
+      })
+    }
 
     // 2. Execute Tri-Layer Rate Limiting (IP + ID, Bounded Tarpit)
     try {
       await enforceAuthRateLimits({
         limiters: loginLimiters,
         req,
-        identifier: email || phone,
+        identifier: email
+          ? emailRateLimitIdentifier(email)
+          : phoneRateLimitIdentifier(phone!),
         namespace: "login"
       });
     } catch {
@@ -106,6 +120,11 @@ export async function POST(req: Request) {
       }
 
       resolvedEmail = normalizeEmail(authUser.email)
+      if (!isCanonicalEmailIdentity(resolvedEmail)) {
+        return respondError(req, 401, "Invalid credentials", {
+          failureCode: "invalid_credentials",
+        })
+      }
     }
 
     if (!resolvedEmail) {
@@ -142,13 +161,26 @@ export async function POST(req: Request) {
         await invalidatePendingLoginChallenge(staleChallengeToken)
       }
 
-      const challengeToken = await issuePendingLoginChallenge({
-        method: email ? "email" : "phone",
-        accessToken: signInData.session?.access_token,
-        email: resolvedEmail ?? signInData.user?.email ?? undefined,
-        phone,
-        refreshToken: signInData.session?.refresh_token,
-      })
+      const accessToken = signInData.session?.access_token
+      const refreshToken = signInData.session?.refresh_token
+      if (!accessToken || !refreshToken) {
+        throw new Error("Supabase did not return a session for the pending login challenge")
+      }
+
+      const challengeToken = email
+          ? await issuePendingLoginChallenge({
+            method: "email",
+            canonicalEmail: resolvedEmail,
+            recipientEmail: recipientEmail ?? resolvedEmail,
+            accessToken,
+            refreshToken,
+          })
+        : await issuePendingLoginChallenge({
+            method: "phone",
+            phone: phone!,
+            accessToken,
+            refreshToken,
+          })
 
       const newToken = await rotateCsrfToken()
       const response = NextResponse.json({
