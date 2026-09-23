@@ -1,6 +1,6 @@
 BEGIN;
 
-SELECT plan(25);
+SELECT plan(37);
 
 SELECT ok(
   EXISTS (
@@ -124,6 +124,33 @@ SELECT ok(
   'service_role cannot invoke the scheduler-only credential cleanup function'
 );
 
+SELECT ok(
+  NOT has_function_privilege(
+    'anon',
+    'public.consume_email_otp(uuid,text,text,text,text,text,timestamp with time zone)',
+    'execute'
+  ),
+  'anon cannot consume email OTP credentials'
+);
+
+SELECT ok(
+  NOT has_function_privilege(
+    'authenticated',
+    'public.consume_email_otp(uuid,text,text,text,text,text,timestamp with time zone)',
+    'execute'
+  ),
+  'authenticated users cannot consume email OTP credentials'
+);
+
+SELECT ok(
+  has_function_privilege(
+    'service_role',
+    'public.consume_email_otp(uuid,text,text,text,text,text,timestamp with time zone)',
+    'execute'
+  ),
+  'service_role can atomically consume email OTP credentials'
+);
+
 SELECT lives_ok(
   $$
     INSERT INTO public.verification_codes (
@@ -195,6 +222,138 @@ SELECT throws_ok(
   '23514',
   NULL,
   'a reset token cannot exist without an Auth user binding'
+);
+
+SELECT lives_ok(
+  $$
+    INSERT INTO public.verification_codes (
+      email, recipient_email, type, expires_at, code_hash, code_salt, code_version
+    ) VALUES (
+      'task3atomic@gmail.com',
+      'Task3.Atomic@gmail.com',
+      'signup',
+      now() + interval '10 minutes',
+      'task3-atomic-success-hash',
+      'task3-atomic-success-salt',
+      'otp_hmac_sha256_v1'
+    )
+  $$,
+  'an email OTP fixture for atomic consumption is accepted'
+);
+
+SELECT is(
+  public.consume_email_otp(
+    (SELECT id FROM public.verification_codes WHERE email = 'task3atomic@gmail.com' AND type = 'signup'),
+    'task3atomic@gmail.com',
+    'signup',
+    'task3-atomic-success-hash',
+    'task3-atomic-success-salt',
+    'otp_hmac_sha256_v1',
+    (SELECT expires_at FROM public.verification_codes WHERE email = 'task3atomic@gmail.com' AND type = 'signup')
+  ),
+  true,
+  'the exact live email OTP generation is consumed'
+);
+
+SELECT ok(
+  (SELECT consumed_at IS NOT NULL FROM public.verification_codes WHERE email = 'task3atomic@gmail.com' AND type = 'signup'),
+  'atomic consumption marks the credential as consumed'
+);
+
+SELECT is(
+  public.consume_email_otp(
+    (SELECT id FROM public.verification_codes WHERE email = 'task3atomic@gmail.com' AND type = 'signup'),
+    'task3atomic@gmail.com',
+    'signup',
+    'task3-atomic-success-hash',
+    'task3-atomic-success-salt',
+    'otp_hmac_sha256_v1',
+    (SELECT expires_at FROM public.verification_codes WHERE email = 'task3atomic@gmail.com' AND type = 'signup')
+  ),
+  false,
+  'a consumed email OTP generation cannot be consumed twice'
+);
+
+SELECT lives_ok(
+  $$
+    INSERT INTO public.verification_codes (
+      email, recipient_email, type, expires_at, code_hash, code_salt, code_version
+    ) VALUES (
+      'task3replacement@gmail.com',
+      'Task3.Replacement@gmail.com',
+      'login_mfa',
+      '2099-01-01T00:00:00.000Z',
+      'task3-replacement-hash-a',
+      'task3-replacement-salt-a',
+      'otp_hmac_sha256_v1'
+    )
+  $$,
+  'an email OTP fixture for resend replacement is accepted'
+);
+
+UPDATE public.verification_codes
+SET code_hash = 'task3-replacement-hash-b',
+    code_salt = 'task3-replacement-salt-b',
+    expires_at = '2099-01-01T00:10:00.000Z',
+    consumed_at = NULL
+WHERE email = 'task3replacement@gmail.com'
+  AND type = 'login_mfa';
+
+SELECT is(
+  public.consume_email_otp(
+    (SELECT id FROM public.verification_codes WHERE email = 'task3replacement@gmail.com' AND type = 'login_mfa'),
+    'task3replacement@gmail.com',
+    'login_mfa',
+    'task3-replacement-hash-a',
+    'task3-replacement-salt-a',
+    'otp_hmac_sha256_v1',
+    '2099-01-01T00:00:00.000Z'
+  ),
+  false,
+  'a stale verification snapshot cannot consume a resend replacement'
+);
+
+SELECT ok(
+  (
+    SELECT code_hash = 'task3-replacement-hash-b'
+      AND code_salt = 'task3-replacement-salt-b'
+      AND consumed_at IS NULL
+    FROM public.verification_codes
+    WHERE email = 'task3replacement@gmail.com'
+      AND type = 'login_mfa'
+  ),
+  'the resend replacement remains intact and unconsumed'
+);
+
+SELECT lives_ok(
+  $$
+    INSERT INTO public.verification_codes (
+      email, recipient_email, type, expires_at, code_hash, code_salt, code_version
+    ) VALUES (
+      'task3expired@gmail.com',
+      'Task3.Expired@gmail.com',
+      'forgot_password',
+      now() - interval '1 second',
+      'task3-expired-hash',
+      'task3-expired-salt',
+      'otp_hmac_sha256_v1'
+    )
+  $$,
+  'an expired email OTP fixture is accepted for consumption testing'
+);
+
+SELECT is(
+  public.consume_email_otp(
+    (SELECT id FROM public.verification_codes WHERE email = 'task3expired@gmail.com' AND type = 'forgot_password'),
+    'task3expired@gmail.com',
+    'forgot_password',
+    'task3-expired-hash',
+    'task3-expired-salt',
+    'otp_hmac_sha256_v1',
+    (SELECT expires_at FROM public.verification_codes WHERE email = 'task3expired@gmail.com' AND type = 'forgot_password')
+  ),
+  false,
+  'database-time expiry prevents consuming an expired email OTP'
 );
 
 SELECT ok(

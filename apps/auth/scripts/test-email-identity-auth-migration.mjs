@@ -66,6 +66,17 @@ function getEmailIdentity(user) {
   return typeof email === "string" ? email : null
 }
 
+function getStableNonEmailIdentities(user) {
+  const identities = Array.isArray(user.identities) ? user.identities : []
+  return identities
+    .filter((identity) => identity?.provider !== "email")
+    .map((identity) => {
+      const { created_at, last_sign_in_at, updated_at, ...stable } = identity
+      return stable
+    })
+    .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)))
+}
+
 async function main() {
   const { anonKey, apiUrl, serviceRoleKey } = await getLocalSupabaseEnvironment()
   const admin = createClient(apiUrl, serviceRoleKey, {
@@ -89,6 +100,8 @@ async function main() {
       email: sourceEmail,
       password,
       email_confirm: true,
+      phone: phoneMetadata,
+      phone_confirm: true,
       user_metadata: {
         phone: phoneMetadata,
         task3MigrationMarker: metadataMarker,
@@ -98,6 +111,13 @@ async function main() {
       throw new Error("Unable to create the local Auth migration fixture")
     }
     userId = created.user.id
+
+    const { data: beforeUpdate, error: beforeUpdateError } = await admin.auth.admin.getUserById(userId)
+    if (beforeUpdateError || !beforeUpdate.user || !beforeUpdate.user.phone_confirmed_at) {
+      throw new Error("Unable to create a confirmed phone migration fixture")
+    }
+    const phoneConfirmedAt = beforeUpdate.user.phone_confirmed_at
+    const nonEmailIdentities = getStableNonEmailIdentities(beforeUpdate.user)
 
     const { error: updateError } = await admin.auth.admin.updateUserById(userId, {
       email: targetEmail,
@@ -117,15 +137,18 @@ async function main() {
       updatedUser.email !== targetEmail ||
       getEmailIdentity(updatedUser) !== targetEmail ||
       !updatedUser.email_confirmed_at ||
+      updatedUser.phone !== phoneMetadata ||
+      updatedUser.phone_confirmed_at !== phoneConfirmedAt ||
       updatedUser.user_metadata?.task3MigrationMarker !== metadataMarker ||
-      updatedUser.user_metadata?.phone !== phoneMetadata
+      updatedUser.user_metadata?.phone !== phoneMetadata ||
+      JSON.stringify(getStableNonEmailIdentities(updatedUser)) !== JSON.stringify(nonEmailIdentities)
     ) {
       throw new Error("Admin email update did not preserve the required Auth identity invariants")
     }
 
     const { data: phoneProjection, error: phoneProjectionError } = await admin
       .from("auth_user_phone_identities")
-      .select("user_id, phone, email")
+      .select("user_id, phone, email, is_verified")
       .eq("user_id", userId)
       .maybeSingle()
 
@@ -134,7 +157,8 @@ async function main() {
       !phoneProjection ||
       phoneProjection.user_id !== userId ||
       phoneProjection.phone !== phoneMetadata ||
-      phoneProjection.email !== targetEmail
+      phoneProjection.email !== targetEmail ||
+      phoneProjection.is_verified !== true
     ) {
       throw new Error("Admin email update did not preserve the phone identity projection")
     }

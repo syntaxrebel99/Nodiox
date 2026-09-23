@@ -1,15 +1,20 @@
 import { appendFile, mkdir, readFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
+import { createHmac } from "node:crypto"
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 
 import {
+  createEmailIdentityMigrationRecoverySnapshot,
+  decideEmailIdentityMigrationRecovery,
   hashEmailForReport,
   planEmailIdentityMigration,
   type AuthUserSnapshot,
+  type AuthPhoneIdentityProjectionSnapshot,
   type EmailIdentityMigrationCandidate,
   verifyMigrationPrecondition,
   verifyUpdatedEmailIdentity,
+  verifyPhoneIdentityProjection as verifyPhoneIdentityProjectionState,
 } from "../src/lib/email-identity-migration.ts"
 
 type Mode = "apply" | "dry-run"
@@ -18,6 +23,34 @@ type AdminClient = SupabaseClient
 interface Options {
   journalPath: string
   mode: Mode
+}
+
+interface JournalRecord {
+  event?: unknown
+  preservationSnapshot?: unknown
+  targetEmailHash?: unknown
+  userId?: unknown
+}
+
+interface IncompleteMigrationUpdate {
+  preservationSnapshot: unknown
+  targetEmailHash: string
+  userId: string
+}
+
+interface RecoveryResolution {
+  recoveredUserIds: Set<string>
+  retryCandidates: Map<string, EmailIdentityMigrationCandidate>
+}
+
+function getJournalUpdateKey(userId: string, targetEmailHash: string): string {
+  return `${userId}:${targetEmailHash}`
+}
+
+function deriveJournalHmacKey(serviceRoleKey: string): string {
+  return createHmac("sha256", serviceRoleKey)
+    .update("nodiox:email-identity-migration:journal-hmac-key:v1")
+    .digest("hex")
 }
 
 function parseOptions(argv: string[]): Options {
@@ -86,6 +119,61 @@ async function appendJournal(path: string, event: Record<string, unknown>) {
   })
 }
 
+function getJournalRecordKey(record: JournalRecord): string | null {
+  if (typeof record.userId !== "string" || typeof record.targetEmailHash !== "string") {
+    return null
+  }
+
+  return getJournalUpdateKey(record.userId, record.targetEmailHash)
+}
+
+async function readIncompleteMigrationUpdates(path: string): Promise<IncompleteMigrationUpdate[]> {
+  let source: string
+  try {
+    source = await readFile(path, "utf8")
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return []
+    throw error
+  }
+
+  const pending = new Map<string, JournalRecord>()
+  for (const [index, line] of source.split(/\r?\n/).entries()) {
+    if (!line.trim()) continue
+
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(line)
+    } catch {
+      throw new Error(`Cannot safely resume: migration journal line ${index + 1} is malformed.`)
+    }
+    if (typeof parsed !== "object" || parsed === null) {
+      throw new Error(`Cannot safely resume: migration journal line ${index + 1} is malformed.`)
+    }
+
+    const record = parsed as JournalRecord
+    if (record.event !== "update_started" && record.event !== "update_verified" && record.event !== "update_recovered_verified") {
+      continue
+    }
+
+    const key = getJournalRecordKey(record)
+    if (!key) {
+      throw new Error(`Cannot safely resume: migration journal line ${index + 1} lacks an update identity.`)
+    }
+
+    if (record.event === "update_started") {
+      pending.set(key, record)
+    } else {
+      pending.delete(key)
+    }
+  }
+
+  return [...pending.values()].map((record) => ({
+    preservationSnapshot: record.preservationSnapshot,
+    targetEmailHash: record.targetEmailHash as string,
+    userId: record.userId as string,
+  }))
+}
+
 async function listAllUsers(admin: AdminClient): Promise<AuthUserSnapshot[]> {
   const users: AuthUserSnapshot[] = []
   const perPage = 200
@@ -135,10 +223,10 @@ function printPlan(plan: ReturnType<typeof planEmailIdentityMigration>) {
 async function verifyPhoneIdentityProjection(
   admin: AdminClient,
   candidate: EmailIdentityMigrationCandidate
-) {
+): Promise<string[]> {
   const { data, error } = await admin
     .from("auth_user_phone_identities")
-    .select("user_id, email")
+    .select("user_id, phone, email, is_verified")
     .eq("user_id", candidate.id)
     .maybeSingle()
 
@@ -146,19 +234,17 @@ async function verifyPhoneIdentityProjection(
     throw new Error(`Unable to verify phone identity projection for ${candidate.id}`)
   }
 
-  if (candidate.hasPhone && !data) {
-    throw new Error(`Missing phone identity projection for ${candidate.id}`)
-  }
-
-  if (data && data.email !== candidate.targetEmail) {
-    throw new Error(`Phone identity projection mismatch for ${candidate.id}`)
-  }
+  return verifyPhoneIdentityProjectionState(
+    candidate,
+    data as AuthPhoneIdentityProjectionSnapshot | null,
+  )
 }
 
 async function applyCandidate(
   admin: AdminClient,
   candidate: EmailIdentityMigrationCandidate,
-  journalPath: string
+  journalPath: string,
+  journalHmacKey: string,
 ) {
   const { data: currentData, error: currentReadError } = await admin.auth.admin.getUserById(candidate.id)
   if (currentReadError || !currentData.user) {
@@ -186,6 +272,7 @@ async function applyCandidate(
 
   await appendJournal(journalPath, {
     event: "update_started",
+    preservationSnapshot: createEmailIdentityMigrationRecoverySnapshot(candidate, journalHmacKey),
     targetEmailHash: candidate.targetEmailHash,
     userId: candidate.id,
   })
@@ -225,7 +312,24 @@ async function applyCandidate(
     throw new Error(`Post-update verification failed for ${candidate.id}: ${failures.join(", ")}`)
   }
 
-  await verifyPhoneIdentityProjection(admin, candidate)
+  let projectionFailures: string[]
+  try {
+    projectionFailures = await verifyPhoneIdentityProjection(admin, candidate)
+  } catch {
+    projectionFailures = ["phone_identity_projection_read_failed"]
+  }
+  if (projectionFailures.length > 0) {
+    await appendJournal(journalPath, {
+      event: "phone_projection_verification_failed",
+      failures: projectionFailures,
+      targetEmailHash: candidate.targetEmailHash,
+      userId: candidate.id,
+    })
+    throw new Error(
+      `Phone identity projection verification failed for ${candidate.id}: ${projectionFailures.join(", ")}`
+    )
+  }
+
   await appendJournal(journalPath, {
     event: "update_verified",
     targetEmailHash: candidate.targetEmailHash,
@@ -233,13 +337,118 @@ async function applyCandidate(
   })
 }
 
+async function resolveIncompleteMigrationUpdates(
+  admin: AdminClient,
+  entries: readonly IncompleteMigrationUpdate[],
+  journalPath: string,
+  journalHmacKey: string,
+): Promise<RecoveryResolution> {
+  const recoveredUserIds = new Set<string>()
+  const retryCandidates = new Map<string, EmailIdentityMigrationCandidate>()
+
+  for (const entry of entries) {
+    const { data, error } = await admin.auth.admin.getUserById(entry.userId)
+    if (error || !data.user) {
+      await appendJournal(journalPath, {
+        event: "recovery_blocked",
+        failures: ["recovery_user_read_failed"],
+        targetEmailHash: entry.targetEmailHash,
+        userId: entry.userId,
+      })
+      throw new Error(`Cannot safely resume migration for ${entry.userId}`)
+    }
+
+    const recoveryPlan = planEmailIdentityMigration([data.user as unknown as AuthUserSnapshot])
+    const candidate = recoveryPlan.candidates[0]
+    if (recoveryPlan.blockers.length > 0 || !candidate) {
+      await appendJournal(journalPath, {
+        event: "recovery_blocked",
+        failures: ["recovery_current_user_is_not_migratable"],
+        targetEmailHash: entry.targetEmailHash,
+        userId: entry.userId,
+      })
+      throw new Error(`Cannot safely resume migration for ${entry.userId}`)
+    }
+
+    const decision = decideEmailIdentityMigrationRecovery(
+      entry.preservationSnapshot,
+      candidate,
+      journalHmacKey,
+    )
+    if (decision.action === "block") {
+      await appendJournal(journalPath, {
+        event: "recovery_blocked",
+        failures: decision.failures,
+        targetEmailHash: entry.targetEmailHash,
+        userId: entry.userId,
+      })
+      throw new Error(`Cannot safely resume migration for ${entry.userId}: ${decision.failures.join(", ")}`)
+    }
+
+    if (decision.action === "retry") {
+      const failures = verifyMigrationPrecondition(candidate, data.user as unknown as AuthUserSnapshot)
+      if (failures.length > 0) {
+        await appendJournal(journalPath, {
+          event: "recovery_blocked",
+          failures,
+          targetEmailHash: entry.targetEmailHash,
+          userId: entry.userId,
+        })
+        throw new Error(`Cannot safely resume migration for ${entry.userId}: ${failures.join(", ")}`)
+      }
+      retryCandidates.set(candidate.id, candidate)
+      continue
+    }
+
+    const userFailures = verifyUpdatedEmailIdentity(candidate, data.user as unknown as AuthUserSnapshot)
+    if (userFailures.length > 0) {
+      await appendJournal(journalPath, {
+        event: "recovery_verification_failed",
+        failures: userFailures,
+        targetEmailHash: entry.targetEmailHash,
+        userId: entry.userId,
+      })
+      throw new Error(`Recovered Auth user verification failed for ${entry.userId}: ${userFailures.join(", ")}`)
+    }
+
+    let projectionFailures: string[]
+    try {
+      projectionFailures = await verifyPhoneIdentityProjection(admin, candidate)
+    } catch {
+      projectionFailures = ["phone_identity_projection_read_failed"]
+    }
+    if (projectionFailures.length > 0) {
+      await appendJournal(journalPath, {
+        event: "recovery_verification_failed",
+        failures: projectionFailures,
+        targetEmailHash: entry.targetEmailHash,
+        userId: entry.userId,
+      })
+      throw new Error(
+        `Recovered phone identity projection verification failed for ${entry.userId}: ${projectionFailures.join(", ")}`
+      )
+    }
+
+    await appendJournal(journalPath, {
+      event: "update_recovered_verified",
+      targetEmailHash: entry.targetEmailHash,
+      userId: entry.userId,
+    })
+    recoveredUserIds.add(candidate.id)
+  }
+
+  return { recoveredUserIds, retryCandidates }
+}
+
 async function main() {
   const options = parseOptions(process.argv.slice(2))
   await loadLocalEnvironment()
 
+  const supabaseUrl = requiredEnvironment("NEXT_PUBLIC_SUPABASE_URL")
+  const serviceRoleKey = requiredEnvironment("SUPABASE_SERVICE_ROLE_KEY")
   const admin = createClient(
-    requiredEnvironment("NEXT_PUBLIC_SUPABASE_URL"),
-    requiredEnvironment("SUPABASE_SERVICE_ROLE_KEY"),
+    supabaseUrl,
+    serviceRoleKey,
     { auth: { autoRefreshToken: false, persistSession: false } }
   )
 
@@ -257,6 +466,15 @@ async function main() {
     return
   }
 
+  const journalHmacKey = deriveJournalHmacKey(serviceRoleKey)
+  const incompleteUpdates = await readIncompleteMigrationUpdates(options.journalPath)
+  const recovery = await resolveIncompleteMigrationUpdates(
+    admin,
+    incompleteUpdates,
+    options.journalPath,
+    journalHmacKey,
+  )
+
   await appendJournal(options.journalPath, {
     event: "apply_started",
     scanned: plan.scanned,
@@ -264,13 +482,34 @@ async function main() {
   })
 
   for (const candidate of plan.candidates) {
-    if (candidate.requiresUpdate) {
-      await applyCandidate(admin, candidate, options.journalPath)
+    if (recovery.recoveredUserIds.has(candidate.id)) {
+      continue
+    }
+
+    const effectiveCandidate = recovery.retryCandidates.get(candidate.id) ?? candidate
+    if (effectiveCandidate.requiresUpdate) {
+      await applyCandidate(admin, effectiveCandidate, options.journalPath, journalHmacKey)
     } else {
       // Makes reruns fail safely if a prior interrupted apply updated Auth but
       // left its phone projection stale. This is read-only and also covers
       // ordinary no-op development accounts.
-      await verifyPhoneIdentityProjection(admin, candidate)
+      let projectionFailures: string[]
+      try {
+        projectionFailures = await verifyPhoneIdentityProjection(admin, effectiveCandidate)
+      } catch {
+        projectionFailures = ["phone_identity_projection_read_failed"]
+      }
+      if (projectionFailures.length > 0) {
+        await appendJournal(options.journalPath, {
+          event: "phone_projection_verification_failed",
+          failures: projectionFailures,
+          targetEmailHash: effectiveCandidate.targetEmailHash,
+          userId: effectiveCandidate.id,
+        })
+        throw new Error(
+          `Phone identity projection verification failed for ${effectiveCandidate.id}: ${projectionFailures.join(", ")}`
+        )
+      }
     }
   }
 
