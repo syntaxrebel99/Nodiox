@@ -19,7 +19,22 @@ const envSchema = z.object({
   SENTRY_PROJECT: z.string().trim().optional(),
   NEXT_PUBLIC_SITE_URL: z.string().trim().optional(),
   NEXT_PUBLIC_DASHBOARD_URL: z.string().trim().optional(),
-  INFOBIP_BASE_URL: z.string().trim().optional(),
+  INFOBIP_BASE_URL: z.string().trim().optional().transform((value, ctx) => {
+    if (!value) return undefined
+
+    try {
+      const url = new URL(value)
+      if (url.protocol === "https:") return url.href
+    } catch {
+      // Malformed URLs receive the same configuration error as insecure protocols.
+    }
+
+    ctx.addIssue({
+      code: "custom",
+      message: "INFOBIP_BASE_URL must be a valid absolute HTTPS URL",
+    })
+    return z.NEVER
+  }),
   INFOBIP_API_KEY: z.string().trim().optional(),
   INFOBIP_SMS_SENDER: z.string().trim().optional(),
   OTP_PEPPER: z.string().optional(),
