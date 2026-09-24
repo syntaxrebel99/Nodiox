@@ -3,6 +3,7 @@ import { cookies } from "next/headers"
 import { createClient } from "~/lib/supabase/server"
 import { EmailService } from "~/lib/email-service"
 import { enforceAuthRateLimits, otpVerifyLimiters } from "~/lib/rate-limit"
+import { emailRateLimitIdentifier, phoneRateLimitIdentifier } from "~/lib/auth-rate-limit-identifier"
 import { z } from "zod"
 import { validateCsrf, rotateCsrfToken } from "~/lib/csrf"
 import { redisClient, hashIdentifier } from "~/lib/rate-limit"
@@ -20,14 +21,9 @@ import {
   issueVerifiedSignupPhoneToken,
   SIGNUP_PHONE_VERIFICATION_COOKIE,
 } from "~/lib/signup-phone-verification"
-
-import { normalizeEmail, sanitizeEmail } from "~/lib/normalize-email"
+import { createSignupEmailVerificationRecord } from "~/lib/email-identity-state"
+import { isCanonicalEmailIdentity, resolveEmailIdentity } from "~/lib/normalize-email"
 import { normalizePhoneNumber, validatePhoneNumber } from "~/lib/phone-validation"
-
-interface SignupEmailVerificationRecord {
-  canonicalEmail: string
-  recipientEmail: string
-}
 
 const verifyOtpSchema = z.object({
   email: z.string().email().optional(),
@@ -37,8 +33,8 @@ const verifyOtpSchema = z.object({
   token: z.string().min(6),
   type: z.enum(["signup", "sms", "email"]),
   flow: z.enum(["login", "signup"]).optional(),
-}).refine(data => data.email || data.phone, {
-  message: "Either email or phone is required",
+}).refine(data => Boolean(data.email) !== Boolean(data.phone), {
+  message: "Provide exactly one email or phone identifier",
 })
 
 export async function POST(req: Request) {
@@ -58,16 +54,25 @@ export async function POST(req: Request) {
     }
 
     const { email: rawEmail, phone: rawPhone, token, type, flow } = result.data
-    const recipientEmail = rawEmail ? sanitizeEmail(rawEmail) : undefined
-    const email = recipientEmail ? normalizeEmail(recipientEmail) : undefined
+    const emailIdentity = rawEmail ? resolveEmailIdentity(rawEmail) : undefined
+    const recipientEmail = emailIdentity?.recipientEmail
+    const email = emailIdentity?.canonicalEmail
     const phone = rawPhone ? normalizePhoneNumber(rawPhone) : undefined
+
+    if (email && !isCanonicalEmailIdentity(email)) {
+      return respondError(req, 400, "Invalid request format", {
+        failureCode: "validation_failed",
+      })
+    }
 
     // 2. Execute Tri-Layer Rate Limiting (IP + ID, Bounded Tarpit)
     try {
       await enforceAuthRateLimits({
         limiters: otpVerifyLimiters,
         req,
-        identifier: email || phone,
+        identifier: email
+          ? emailRateLimitIdentifier(email)
+          : phoneRateLimitIdentifier(phone!),
         namespace: "otp_verify"
       });
     } catch {
@@ -118,7 +123,7 @@ export async function POST(req: Request) {
         type === "email" &&
         (!pendingLogin ||
           pendingLogin.method !== "email" ||
-          pendingLogin.email !== email)
+          pendingLogin.canonicalEmail !== email)
       ) {
         return respondError(
           req,
@@ -149,10 +154,10 @@ export async function POST(req: Request) {
         const signupTokenHash = hashIdentifier("signup_token", signupToken)
         await redisClient.set(
           `@nodiox/signup_token:${signupTokenHash}`,
-          {
-            canonicalEmail: email,
-            recipientEmail: recipientEmail ?? email,
-          } satisfies SignupEmailVerificationRecord,
+          JSON.stringify(createSignupEmailVerificationRecord(
+            email,
+            recipientEmail ?? email,
+          )),
           { ex: 60 * 15 }
         )
 

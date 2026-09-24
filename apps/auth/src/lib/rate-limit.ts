@@ -1,9 +1,13 @@
 import { Ratelimit } from "@upstash/ratelimit"
 import { Redis } from "@upstash/redis"
 import crypto from "crypto"
-import { getCorrelationId, securityLog } from "./security-log"
-import { getAuthEnv } from "./env"
-import { getAuthTestSimulation } from "./test-simulation"
+import {
+  serializeAuthRateLimitIdentifier,
+  type AuthRateLimitIdentifier,
+} from "./auth-rate-limit-identifier.ts"
+import { getCorrelationId, securityLog } from "./security-log.ts"
+import { getAuthEnv } from "./env.ts"
+import { getAuthTestSimulation } from "./test-simulation.ts"
 
 const authEnv = getAuthEnv()
 
@@ -81,21 +85,6 @@ export const otpVerifyLimiters = [
 
 // -- Helpers --
 
-export function normalizeIdentifier(input: string): string {
-  const trimmed = input.trim().toLowerCase()
-  if (!trimmed.includes("@")) return trimmed; // It's a phone number or something else
-
-  const [local, domain] = trimmed.split("@")
-  
-  if (domain === "gmail.com" || domain === "googlemail.com") {
-    // Remove aliases (+) and normalize dots (.)
-    const cleanLocal = local.split("+")[0].replace(/\./g, "")
-    return `${cleanLocal}@gmail.com`
-  }
-
-  return `${local}@${domain}`
-}
-
 export function hashIdentifier(namespace: string, id: string): string {
   return crypto.createHash("sha256").update(`${namespace}:${id}`).digest("hex")
 }
@@ -145,7 +134,7 @@ export async function enforceAuthRateLimits(options: {
   limiters: Ratelimit[],
   req?: Request,
   ip?: string,
-  identifier?: string,
+  identifier?: AuthRateLimitIdentifier,
   namespace: string,
   tenantScope?: string,
 }) {
@@ -181,11 +170,10 @@ export async function enforceAuthRateLimits(options: {
   }
 
   // 2. Build tracking keys
-  let normalizedId = ""
   let hashedId = ""
   if (identifier) {
-    normalizedId = normalizeIdentifier(identifier)
-    hashedId = hashIdentifier(namespace, `${tenantScope}:${normalizedId}`)
+    const serializedIdentifier = serializeAuthRateLimitIdentifier(identifier)
+    hashedId = hashIdentifier(namespace, `${tenantScope}:${serializedIdentifier}`)
   }
 
   // 3. Prepare Parallel Execution Tasks

@@ -1,20 +1,23 @@
 import { randomUUID } from "node:crypto"
 
-import { hashIdentifier, redisClient } from "./rate-limit"
+import { hashIdentifier, redisClient } from "./rate-limit.ts"
+import {
+  parsePendingLoginChallenge,
+  type PendingLoginChallengeInput,
+} from "./pending-login-state.ts"
+
+export {
+  parsePendingLoginChallenge,
+  type PendingEmailLoginChallenge,
+  type PendingLoginChallenge,
+  type PendingLoginChallengeInput,
+  type PendingPhoneLoginChallenge,
+} from "./pending-login-state.ts"
 
 export const LOGIN_CHALLENGE_COOKIE = "nodiox_login_challenge"
 
 const LOGIN_CHALLENGE_PREFIX = "@nodiox/login_challenge"
 const LOGIN_CHALLENGE_TTL_SECONDS = 60 * 15
-
-export interface PendingLoginChallenge {
-  method: "email" | "phone"
-  accessToken?: string
-  email?: string
-  phone?: string
-  refreshToken?: string
-  issuedAt: string
-}
 
 function getChallengeKey(token: string) {
   return `${LOGIN_CHALLENGE_PREFIX}:${hashIdentifier("login_challenge", token)}`
@@ -31,12 +34,17 @@ export function getLoginChallengeCookieOptions() {
 }
 
 export async function issuePendingLoginChallenge(
-  challenge: Omit<PendingLoginChallenge, "issuedAt">
+  challenge: PendingLoginChallengeInput
 ) {
   const token = randomUUID()
-  const payload: PendingLoginChallenge = {
+  const payload = {
     ...challenge,
+    version: 1 as const,
     issuedAt: new Date().toISOString(),
+  }
+
+  if (!parsePendingLoginChallenge(payload)) {
+    throw new Error("Invalid pending login challenge")
   }
 
   await redisClient.set(getChallengeKey(token), JSON.stringify(payload), {
@@ -47,7 +55,7 @@ export async function issuePendingLoginChallenge(
 }
 
 export async function getPendingLoginChallenge(token: string) {
-  const rawChallenge = await redisClient.get<string | PendingLoginChallenge>(getChallengeKey(token))
+  const rawChallenge = await redisClient.get<unknown>(getChallengeKey(token))
 
   if (!rawChallenge) {
     return null
@@ -56,14 +64,10 @@ export async function getPendingLoginChallenge(token: string) {
   try {
     const parsed =
       typeof rawChallenge === "string"
-        ? (JSON.parse(rawChallenge) as PendingLoginChallenge)
+        ? JSON.parse(rawChallenge)
         : rawChallenge
 
-    if (parsed.method !== "email" && parsed.method !== "phone") {
-      return null
-    }
-
-    return parsed
+    return parsePendingLoginChallenge(parsed)
   } catch {
     return null
   }

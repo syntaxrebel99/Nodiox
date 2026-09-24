@@ -28,6 +28,7 @@ export function Step1Name({ onNext, isLoading }: Step1NameProps) {
   const [isNameFocused, setIsNameFocused] = useState(false)
 
   const fullName = watch("fullName") || ""
+  const firstName = fullName.trim().split(" ")[0] || "Friend"
 
   const handleNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     let filtered = e.target.value
@@ -93,7 +94,7 @@ export function Step1Name({ onNext, isLoading }: Step1NameProps) {
           />
         </div>
         <h1 className="text-2xl font-bold">
-          {o("step1Title")}
+          {o("step1Title", { firstName })}
         </h1>
         <p className="text-sm text-muted-foreground">
           {o("step1Subtitle")}

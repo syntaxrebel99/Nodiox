@@ -3,6 +3,7 @@ import { cookies } from "next/headers"
 import { EmailService } from "~/lib/email-service"
 import { createAdminClient } from "~/lib/supabase/admin"
 import { enforceAuthRateLimits, otpSendLimiters, otpSendCooldownLimit, hashIdentifier } from "~/lib/rate-limit"
+import { emailRateLimitIdentifier, phoneRateLimitIdentifier } from "~/lib/auth-rate-limit-identifier"
 import { z } from "zod"
 import { validateCsrf } from "~/lib/csrf"
 import { respondError } from "~/lib/security-response"
@@ -11,15 +12,15 @@ import { logger } from "~/lib/logger"
 import { getAuthTestSimulation } from "~/lib/test-simulation"
 import { normalizePhoneNumber, validatePhoneNumber } from "~/lib/phone-validation"
 
-import { normalizeEmail, sanitizeEmail } from "~/lib/normalize-email"
+import { isCanonicalEmailIdentity, resolveEmailIdentity } from "~/lib/normalize-email"
 
 const sendOtpSchema = z.object({
   email: z.string().email().optional(),
   phone: z.string().refine((value) => validatePhoneNumber(value, "DZ"), {
     message: "Invalid phone number",
   }).optional(),
-}).refine(data => data.email || data.phone, {
-  message: "Either email or phone is required",
+}).refine(data => Boolean(data.email) !== Boolean(data.phone), {
+  message: "Provide exactly one email or phone identifier",
 })
 
 export async function POST(req: Request) {
@@ -43,16 +44,25 @@ export async function POST(req: Request) {
     }
 
     const { email: rawEmail, phone: rawPhone } = result.data
-    const recipientEmail = rawEmail ? sanitizeEmail(rawEmail) : undefined
-    const email = recipientEmail ? normalizeEmail(recipientEmail) : undefined
+    const emailIdentity = rawEmail ? resolveEmailIdentity(rawEmail) : undefined
+    const recipientEmail = emailIdentity?.recipientEmail
+    const email = emailIdentity?.canonicalEmail
     const phone = rawPhone ? normalizePhoneNumber(rawPhone) : undefined
+
+    if (email && !isCanonicalEmailIdentity(email)) {
+      return respondError(req, 400, "Invalid request format", {
+        failureCode: "validation_failed",
+      })
+    }
 
     // 2. Execute Tri-Layer Rate Limiting (IP + ID, Bounded Tarpit)
     try {
       await enforceAuthRateLimits({
         limiters: [...otpSendLimiters, otpSendCooldownLimit], // Enforces 1 per 60s minimum gap + sustained
         req,
-        identifier: email || phone,
+        identifier: email
+          ? emailRateLimitIdentifier(email)
+          : phoneRateLimitIdentifier(phone!),
         namespace: "otp_send"
       });
     } catch {
@@ -72,10 +82,21 @@ export async function POST(req: Request) {
 
     // 3. ACCOUNT ENUMERATION PROTECTION:
     // Check if the user already exists in Supabase.
-    const admin = createAdminClient()
-    const { data: userExists } = await admin.rpc("check_user_exists", { 
-      email_input: email 
-    })
+    let userExists = false
+    if (email) {
+      const admin = createAdminClient()
+      const { data, error } = await admin.rpc("check_user_exists", {
+        email_input: email,
+      })
+      if (error) {
+        logger.error("check_user_exists_failed", error)
+        return respondError(req, 503, "Authentication service temporarily unavailable", {
+          failureCode: "provider_unavailable",
+          provider: "supabase",
+        })
+      }
+      userExists = data === true
+    }
 
     // 4. Get Locale from Cookie (NEXT_LOCALE)
     const cookieStore = await cookies()

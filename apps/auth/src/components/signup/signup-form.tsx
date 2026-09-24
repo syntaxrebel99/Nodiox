@@ -47,7 +47,8 @@ export function SignupForm({
     },
     mode: "onChange",
   })
-  const hasRestoredDraft = useRef(false)
+  const [isDraftHydrated, setIsDraftHydrated] = useState(false)
+  const hasHydratedDraft = useRef(false)
 
   const persistDraft = React.useCallback((nextStep: number, values?: OnboardingData) => {
     if (typeof window === "undefined") return
@@ -77,8 +78,11 @@ export function SignupForm({
   const fullName = methods.watch("fullName") || ""
   const firstName = fullName.split(" ")[0] || ""
 
-  // Re-hydrate from session storage on mount
+  // Restore once; defer persistence until the restored state has committed.
   useEffect(() => {
+    if (hasHydratedDraft.current) return
+    hasHydratedDraft.current = true
+
     const saved = sessionStorage.getItem(STORAGE_KEY)
     if (saved) {
       try {
@@ -96,17 +100,17 @@ export function SignupForm({
       }
     }
 
-    hasRestoredDraft.current = true
+    setIsDraftHydrated(true)
   }, [methods])
 
   useEffect(() => {
-    if (!hasRestoredDraft.current) return
+    if (!isDraftHydrated) return
     persistDraft(step)
-  }, [persistDraft, step])
+  }, [isDraftHydrated, persistDraft, step])
 
   // Auto-persist changes to session storage
   useEffect(() => {
-    if (!hasRestoredDraft.current) return
+    if (!isDraftHydrated) return
 
     // Stop persisting if we reached success state
     if (step === 7) return;
@@ -121,7 +125,7 @@ export function SignupForm({
       sessionStorage.setItem(STORAGE_KEY, JSON.stringify(dataToSave))
     })
     return () => subscription.unsubscribe()
-  }, [methods, step])
+  }, [isDraftHydrated, methods, step])
 
   const onSubmit = async (data: OnboardingData) => {
     if (step !== 6) return

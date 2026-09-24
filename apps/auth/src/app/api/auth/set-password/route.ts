@@ -15,11 +15,7 @@ import {
   SIGNUP_PHONE_VERIFICATION_COOKIE,
 } from "~/lib/signup-phone-verification"
 import { normalizePhoneNumber, validatePhoneNumber } from "~/lib/phone-validation"
-
-interface SignupEmailVerificationRecord {
-  canonicalEmail: string
-  recipientEmail: string
-}
+import { parseSignupEmailVerificationRecord } from "~/lib/email-identity-state"
 
 const setPasswordSchema = z.object({
   password: z.string().min(8),
@@ -68,46 +64,14 @@ export async function POST(req: Request) {
     const signupToken = cookieStore.get("nodiox_signup_token")?.value
 
     const signupTokenHash = signupToken ? hashIdentifier("signup_token", signupToken) : null
-    const signupEmailRecordRaw =
+    const signupEmailRecordRaw: unknown =
       signupTokenHash
-        ? await redisClient.get<SignupEmailVerificationRecord | string>(`@nodiox/signup_token:${signupTokenHash}`)
+        ? await redisClient.get<unknown>(`@nodiox/signup_token:${signupTokenHash}`)
         : null
 
-    let verifiedEmail: string | null = null
-    let recipientEmail: string | null = null
-
-    if (
-      signupEmailRecordRaw &&
-      typeof signupEmailRecordRaw === "object" &&
-      !Array.isArray(signupEmailRecordRaw)
-    ) {
-      const parsed = signupEmailRecordRaw as Partial<SignupEmailVerificationRecord>
-      if (
-        typeof parsed.canonicalEmail === "string" &&
-        typeof parsed.recipientEmail === "string"
-      ) {
-        verifiedEmail = parsed.canonicalEmail
-        recipientEmail = parsed.recipientEmail
-      }
-    } else if (typeof signupEmailRecordRaw === "string") {
-      try {
-        const parsed = JSON.parse(signupEmailRecordRaw) as SignupEmailVerificationRecord
-        if (
-          typeof parsed.canonicalEmail === "string" &&
-          typeof parsed.recipientEmail === "string"
-        ) {
-          verifiedEmail = parsed.canonicalEmail
-          recipientEmail = parsed.recipientEmail
-        } else {
-          verifiedEmail = signupEmailRecordRaw
-          recipientEmail = signupEmailRecordRaw
-        }
-      } catch {
-        // Backward compatibility for previously stored string-only email tokens.
-        verifiedEmail = signupEmailRecordRaw
-        recipientEmail = signupEmailRecordRaw
-      }
-    }
+    const signupEmailRecord = parseSignupEmailVerificationRecord(signupEmailRecordRaw)
+    const verifiedEmail = signupEmailRecord?.canonicalEmail ?? null
+    const recipientEmail = signupEmailRecord?.recipientEmail ?? null
 
     if (!verifiedEmail) {
       return respondError(req, 401, "Email verification expired or not found. Please restart signup.")
