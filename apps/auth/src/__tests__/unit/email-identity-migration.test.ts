@@ -219,6 +219,107 @@ describe("email identity migration planner", () => {
     )
   })
 
+  test("treats equivalent non-email identity JSON representations as preserved but detects stable changes", () => {
+    const sourcePhoneIdentity = {
+      identity_data: {
+        phone: "+213555123456",
+        phone_verified: true,
+        sub: "user",
+      },
+      identity_id: "phone-identity",
+      provider: "phone",
+      user_id: "user",
+    }
+    const readBackPhoneIdentity = {
+      provider: "phone",
+      user_id: "user",
+      identity_id: "phone-identity",
+      identity_data: {
+        sub: "user",
+        phone_verified: true,
+        phone: "+213555123456",
+      },
+    }
+    const [candidate] = planEmailIdentityMigration([
+      {
+        id: "user",
+        email: "first.last@googlemail.com",
+        email_confirmed_at: "2026-01-01T00:00:00.000Z",
+        identities: [identity("first.last@googlemail.com"), sourcePhoneIdentity],
+      },
+    ]).candidates
+
+    assert.deepStrictEqual(
+      verifyUpdatedEmailIdentity(candidate, {
+        id: "user",
+        email: "firstlast@gmail.com",
+        email_confirmed_at: "2026-01-01T00:00:00.000Z",
+        identities: [identity("firstlast@gmail.com"), readBackPhoneIdentity],
+      }),
+      [],
+    )
+
+    assert.deepStrictEqual(
+      verifyUpdatedEmailIdentity(candidate, {
+        id: "user",
+        email: "firstlast@gmail.com",
+        email_confirmed_at: "2026-01-01T00:00:00.000Z",
+        identities: [
+          identity("firstlast@gmail.com"),
+          {
+            ...readBackPhoneIdentity,
+            identity_data: {
+              ...readBackPhoneIdentity.identity_data,
+              phone_verified: false,
+            },
+          },
+        ],
+      }),
+      ["non_email_linked_identities_changed"],
+    )
+  })
+
+  test("uses the Auth readback phone representation rather than the Admin input", () => {
+    const adminPhoneInput = "+15551234567890"
+    const storedPhone = "15551234567890"
+    const [candidate] = planEmailIdentityMigration([
+      {
+        id: "user",
+        email: "first.last@googlemail.com",
+        email_confirmed_at: "2026-01-01T00:00:00.000Z",
+        phone: storedPhone,
+        phone_confirmed_at: "2026-01-02T00:00:00.000Z",
+        identities: [identity("first.last@googlemail.com"), phoneIdentity(storedPhone)],
+        user_metadata: { phone: adminPhoneInput },
+      },
+    ]).candidates
+
+    const updatedUser = {
+      id: "user",
+      email: "firstlast@gmail.com",
+      email_confirmed_at: "2026-01-01T00:00:00.000Z",
+      phone: storedPhone,
+      phone_confirmed_at: "2026-01-02T00:00:00.000Z",
+      identities: [identity("firstlast@gmail.com"), phoneIdentity(storedPhone)],
+      user_metadata: { phone: adminPhoneInput },
+    }
+
+    assert.deepStrictEqual(verifyUpdatedEmailIdentity(candidate, updatedUser), [])
+    assert.deepStrictEqual(
+      verifyPhoneIdentityProjection(candidate, {
+        email: "firstlast@gmail.com",
+        is_verified: true,
+        phone: storedPhone,
+        user_id: "user",
+      }),
+      [],
+    )
+    assert.deepStrictEqual(
+      verifyUpdatedEmailIdentity(candidate, { ...updatedUser, phone: adminPhoneInput }),
+      ["phone_changed"],
+    )
+  })
+
   test("rejects a changed phone confirmation before an Admin API update", () => {
     const [candidate] = planEmailIdentityMigration([
       {

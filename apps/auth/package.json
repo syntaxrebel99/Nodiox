@@ -13,7 +13,7 @@
     "test": "pnpm run test:unit && pnpm run test:api",
     "test:unit": "node ./scripts/run-unit-tests.mjs",
     "test:api": "node ./scripts/run-api-tests.mjs",
-    "test:auth-migration-contract": "node ./scripts/test-email-identity-auth-migration.mjs",
+    "test:auth-migration-contract": "node --experimental-strip-types ./scripts/test-email-identity-auth-migration.mjs",
     "migrate:email-identity": "node --experimental-strip-types ./scripts/migrate-email-identity.ts",
     "test:e2e": "playwright test"
   },

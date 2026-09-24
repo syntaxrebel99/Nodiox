@@ -5,6 +5,11 @@ import { randomUUID } from "node:crypto"
 import { promisify } from "node:util"
 
 import { createClient } from "@supabase/supabase-js"
+import {
+  planEmailIdentityMigration,
+  verifyPhoneIdentityProjection,
+  verifyUpdatedEmailIdentity,
+} from "../src/lib/email-identity-migration.ts"
 
 const execFileAsync = promisify(execFile)
 
@@ -66,15 +71,23 @@ function getEmailIdentity(user) {
   return typeof email === "string" ? email : null
 }
 
-function getStableNonEmailIdentities(user) {
-  const identities = Array.isArray(user.identities) ? user.identities : []
-  return identities
-    .filter((identity) => identity?.provider !== "email")
-    .map((identity) => {
-      const { created_at, last_sign_in_at, updated_at, ...stable } = identity
-      return stable
-    })
-    .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)))
+function getPostUpdateCandidate(beforeUpdate) {
+  const plan = planEmailIdentityMigration([beforeUpdate])
+  const [candidate] = plan.candidates
+
+  if (plan.blockers.length > 0 || !candidate || !candidate.requiresUpdate) {
+    throw new Error("Unable to build the local Auth migration fixture verification plan")
+  }
+
+  return candidate
+}
+
+function assertPreservedUserState(candidate, updatedUser) {
+  const failures = verifyUpdatedEmailIdentity(candidate, updatedUser)
+  if (failures.length > 0) {
+    // Failure labels are deliberately bounded identifiers, never account data.
+    throw new Error(`Admin email update changed protected Auth state: ${failures.join(", ")}`)
+  }
 }
 
 async function main() {
@@ -116,8 +129,10 @@ async function main() {
     if (beforeUpdateError || !beforeUpdate.user || !beforeUpdate.user.phone_confirmed_at) {
       throw new Error("Unable to create a confirmed phone migration fixture")
     }
-    const phoneConfirmedAt = beforeUpdate.user.phone_confirmed_at
-    const nonEmailIdentities = getStableNonEmailIdentities(beforeUpdate.user)
+    // GoTrue canonicalizes the direct phone field (for example, it removes a
+    // leading "+"). The migration must preserve the stored Auth value, not
+    // compare its readback to the Admin API input representation.
+    const candidate = getPostUpdateCandidate(beforeUpdate.user)
 
     const { error: updateError } = await admin.auth.admin.updateUserById(userId, {
       email: targetEmail,
@@ -133,18 +148,10 @@ async function main() {
       throw new Error("Unable to read the local Auth migration fixture after update")
     }
 
-    if (
-      updatedUser.email !== targetEmail ||
-      getEmailIdentity(updatedUser) !== targetEmail ||
-      !updatedUser.email_confirmed_at ||
-      updatedUser.phone !== phoneMetadata ||
-      updatedUser.phone_confirmed_at !== phoneConfirmedAt ||
-      updatedUser.user_metadata?.task3MigrationMarker !== metadataMarker ||
-      updatedUser.user_metadata?.phone !== phoneMetadata ||
-      JSON.stringify(getStableNonEmailIdentities(updatedUser)) !== JSON.stringify(nonEmailIdentities)
-    ) {
-      throw new Error("Admin email update did not preserve the required Auth identity invariants")
+    if (updatedUser.email !== targetEmail || getEmailIdentity(updatedUser) !== targetEmail) {
+      throw new Error("Admin email update did not establish the canonical email identity")
     }
+    assertPreservedUserState(candidate, updatedUser)
 
     const { data: phoneProjection, error: phoneProjectionError } = await admin
       .from("auth_user_phone_identities")
@@ -152,15 +159,16 @@ async function main() {
       .eq("user_id", userId)
       .maybeSingle()
 
-    if (
-      phoneProjectionError ||
-      !phoneProjection ||
-      phoneProjection.user_id !== userId ||
-      phoneProjection.phone !== phoneMetadata ||
-      phoneProjection.email !== targetEmail ||
-      phoneProjection.is_verified !== true
-    ) {
-      throw new Error("Admin email update did not preserve the phone identity projection")
+    if (phoneProjectionError) {
+      throw new Error("Unable to read the local phone identity projection")
+    }
+
+    const projectionFailures = verifyPhoneIdentityProjection(candidate, phoneProjection)
+    if (projectionFailures.length > 0) {
+      // Like the Auth-state diagnostics above, these are controlled labels.
+      throw new Error(
+        `Admin email update changed phone identity projection: ${projectionFailures.join(", ")}`,
+      )
     }
 
     const { data: exists, error: existsError } = await admin.rpc("check_user_exists", {
